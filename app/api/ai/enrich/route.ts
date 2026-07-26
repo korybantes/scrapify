@@ -1,0 +1,78 @@
+import { db, jsonError } from "@/app/lib/server-db";
+
+const systemPrompt = `You are a senior Turkish Shopify ecommerce copywriter.
+Return only simple Shopify-safe HTML using <p>, <ul>, <li>, and <strong>.
+Write one compact original paragraph and 2-3 short feature bullets.
+Never mention the source retailer or invent product facts.
+Use a premium, trustworthy tone without exaggerated claims.`;
+
+function cleanHtml(value: string) {
+  return value
+    .trim()
+    .replace(/^```(?:html)?\s*|\s*```$/gi, "")
+    .replace(/<(?!\/?(?:p|ul|li|strong)\b)[^>]*>/gi, "")
+    .trim();
+}
+
+export async function POST(request: Request) {
+  try {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) return Response.json({ error: "Groq is not configured" }, { status: 503 });
+    const payload = await request.json();
+    const ids = Array.isArray(payload.product_ids) ? payload.product_ids.slice(0, 100) : [];
+    if (!ids.length) return Response.json({ error: "Select at least one product" }, { status: 400 });
+    const sql = db();
+    const products = await sql`
+      SELECT id, title, vendor, category, sale_price
+      FROM products WHERE id = ANY(${ids}::uuid[])
+    `;
+
+    let enriched = 0;
+    const failed: Array<{ id: string; error: string }> = [];
+    for (const product of products) {
+      try {
+        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile",
+            temperature: 0.45,
+            max_completion_tokens: 500,
+            messages: [
+              { role: "system", content: systemPrompt },
+              {
+                role: "user",
+                content: `Product: ${product.title}\nBrand: ${product.vendor || "Unknown"}\nCategory: ${product.category || "Unknown"}\nPrice: ${product.sale_price || "Unknown"} TRY`,
+              },
+            ],
+          }),
+        });
+        if (!response.ok) throw new Error(`Groq returned ${response.status}`);
+        const result = await response.json();
+        const bodyHtml = cleanHtml(result.choices?.[0]?.message?.content ?? "");
+        if (!bodyHtml) throw new Error("Groq returned an empty description");
+        const tags = [product.vendor, product.category, "parfum"].filter(Boolean);
+        await sql`
+          UPDATE products SET body_html = ${bodyHtml}, tags = ${tags},
+            ai_status = 'enriched', ai_error = NULL, updated_at = now()
+          WHERE id = ${product.id}
+        `;
+        await sql`
+          INSERT INTO activity_events(product_id, event_type, message)
+          VALUES (${product.id}, 'ai_enriched', ${`AI description generated for ${product.title}`})
+        `;
+        enriched += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "AI enrichment failed";
+        failed.push({ id: String(product.id), error: message });
+        await sql`
+          UPDATE products SET ai_status = 'failed', ai_error = ${message.slice(0, 1000)},
+            updated_at = now() WHERE id = ${product.id}
+        `;
+      }
+    }
+    return Response.json({ enriched, failed });
+  } catch (error) {
+    return jsonError(error);
+  }
+}

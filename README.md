@@ -1,98 +1,83 @@
-# vinext-starter
+# Scrappify
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+Scrappify is a production catalog pipeline for collecting products with
+Playwright, reviewing them in a web dashboard, enriching selected records with
+Groq, and exporting or syncing them to Shopify.
 
-## Prerequisites
+The repository contains two production surfaces:
 
-- Node.js `>=22.13.0`
+- `app/`: the responsive dashboard and server-side API routes deployed with Sites.
+- `backend/`: the FastAPI service and always-on Python Playwright worker.
 
-## Quick Start
+There is no seeded or fallback product data. The dashboard reads products, jobs,
+events, prices, warnings, and service status directly from Neon PostgreSQL.
+
+## Architecture
+
+1. The dashboard inserts a `queued` record into `scrape_jobs`.
+2. The Python worker claims one job with PostgreSQL `FOR UPDATE SKIP LOCKED`.
+3. Playwright collects real product cards and upserts products by source URL.
+4. The dashboard polls Neon and displays live job progress.
+5. Selected products can be enriched through Groq.
+6. Shopify CSV is generated from the current database at download time.
+7. Optional Shopify GraphQL sync uses `productSet` for handle-based upserts.
+
+PostgreSQL is the queue and source of truth, so a separate Redis service is not
+required for this workload.
+
+## Local dashboard
+
+Copy `.env.example` to `.env.local`, fill in the required values, then:
 
 ```bash
 npm install
 npm run dev
-npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+## Local API and worker
 
-## Included Shape
+From `backend/`, create a Python 3.10+ environment and install dependencies:
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.txt
+.venv/Scripts/python -m playwright install chromium
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+Run the API:
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+```bash
+.venv/Scripts/python -m uvicorn app.api:app --host 0.0.0.0 --port 8000
+```
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+Run the worker in a second process:
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+```bash
+.venv/Scripts/python -m app.worker
+```
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+The API and worker automatically apply the idempotent initial schema.
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+## Deployment
 
-## Useful Commands
+`render.yaml` defines an API service and a background worker. Set these secrets
+in the deployment provider:
 
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
+- `NEON_DB_URL`
+- `GROQ_API_KEY`
+- `SCRAPPIFY_API_KEY`
+- `ALLOWED_ORIGINS`
+- optional `SHOPIFY_STORE_DOMAIN`
+- optional `SHOPIFY_ACCESS_TOKEN`
 
-## Learn More
+The GitHub workflow publishes the backend container to
+`ghcr.io/korybantes/scrappify-backend:latest`.
 
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+## Security
+
+- Credentials are environment variables and are excluded from Git.
+- Source URLs are restricted to an explicit hostname allowlist.
+- Database writes use parameterized queries.
+- The FastAPI surface supports an `X-Scrappify-Key` shared secret.
+- Shopify products default to draft unless the database record is explicitly
+  marked published.

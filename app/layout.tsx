@@ -19,13 +19,13 @@ export async function generateMetadata(): Promise<Metadata> {
       title: "Scrappify — Commerce Intelligence",
       description: "From source to Shopify, beautifully.",
       type: "website",
-      images: [{ url: `${origin}/og.png`, width: 1536, height: 1024, alt: "Scrappify commerce intelligence dashboard" }],
+      images: [{ url: `${origin}/og-v2.png`, width: 1536, height: 1024, alt: "Scrappify real product data pipeline" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "Scrappify — Commerce Intelligence",
       description: "From source to Shopify, beautifully.",
-      images: [`${origin}/og.png`],
+      images: [`${origin}/og-v2.png`],
     },
   };
 }
