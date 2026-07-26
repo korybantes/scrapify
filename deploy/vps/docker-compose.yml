@@ -1,0 +1,15 @@
+services:
+  worker:
+    image: ghcr.io/korybantes/scrappify-backend:latest
+    command: python -m app.worker
+    env_file:
+      - .env
+    restart: unless-stopped
+    init: true
+    shm_size: 512mb
+    mem_limit: 1200m
+    cpus: 2.0
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"

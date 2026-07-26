@@ -1,17 +1,21 @@
+import json
 from functools import lru_cache
 from typing import Annotated
 
 from pydantic import AliasChoices, BeforeValidator, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 def _split_csv(value):
     if isinstance(value, str):
+        value = value.strip()
+        if value.startswith("["):
+            return json.loads(value)
         return [item.strip() for item in value.split(",") if item.strip()]
     return value
 
 
-CsvList = Annotated[list[str], BeforeValidator(_split_csv)]
+CsvList = Annotated[list[str], NoDecode, BeforeValidator(_split_csv)]
 
 
 class Settings(BaseSettings):

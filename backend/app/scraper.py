@@ -35,32 +35,50 @@ TITLE_SELECTORS = [
     "h2",
 ]
 
+PRICE_TOKEN_PATTERN = re.compile(
+    r"(?<!\d)(?:"
+    r"\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?"
+    r"|\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?"
+    r"|\d+,\d{1,2}"
+    r"|\d+\.\d{1,2}"
+    r"|\d+"
+    r")(?!\d)"
+)
+
 
 def parse_price(raw: str | None) -> tuple[Decimal | None, str | None]:
     if not raw:
         return None, None
-    value = re.sub(r"[^\d.,]", "", str(raw))
-    if not value:
+    match = PRICE_TOKEN_PATTERN.search(str(raw).replace("\xa0", " "))
+    if not match:
         return None, "Price text contains no digits"
+    value = match.group(0).replace(" ", "")
 
     last_comma, last_dot = value.rfind(","), value.rfind(".")
     if last_comma == -1 and last_dot == -1:
         normalized = value
     elif last_comma > last_dot:
-        normalized = value[:last_comma].replace(".", "").replace(",", "")
-        decimals = re.sub(r"\D", "", value[last_comma + 1 :])[:2]
-        normalized += f".{decimals.ljust(2, '0')}" if decimals else ""
+        decimals = value[last_comma + 1 :]
+        if last_dot >= 0 or len(decimals) in (1, 2):
+            normalized = value[:last_comma].replace(".", "").replace(",", "")
+            normalized += f".{decimals.ljust(2, '0')}" if decimals else ""
+        else:
+            normalized = value.replace(",", "")
     else:
         digits_after_dot = value[last_dot + 1 :]
-        if last_comma == -1 and value.count(".") == 1 and len(digits_after_dot) in (1, 2):
+        if last_comma >= 0:
+            normalized = value.replace(",", "")
+        elif value.count(".") == 1 and len(digits_after_dot) in (1, 2):
             normalized = value
         else:
-            normalized = value.replace(".", "").replace(",", "")
+            normalized = value.replace(".", "")
 
     try:
         price = Decimal(normalized)
     except InvalidOperation:
         return None, f"Could not parse price: {raw}"
+    if price >= Decimal("1000000000000"):
+        return None, "Price exceeds the database storage limit"
     warning = None
     if price <= 0:
         warning = "Price is zero or negative"
