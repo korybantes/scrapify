@@ -4,9 +4,11 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { authClient } from "@/app/lib/auth-client";
 import {
+  Activity,
   Bell,
   Boxes,
   Check,
+  CheckCircle2,
   ChevronDown,
   Download,
   FileOutput,
@@ -23,6 +25,7 @@ import {
   ShoppingBag,
   Sparkles,
   Timer,
+  Users,
   X,
 } from "lucide-react";
 
@@ -41,6 +44,7 @@ type Product = {
   inventory_qty: number;
   price_warning: string | null;
   ai_status: "pending" | "enriched" | "failed" | "skipped";
+  ai_error: string | null;
   shopify_status: "not_synced" | "draft" | "active" | "failed";
   updated_at: string;
 };
@@ -104,12 +108,16 @@ type DashboardData = {
   summary: {
     total_products: number;
     ai_enriched: number;
+    ai_pending: number;
+    ai_failed: number;
+    ai_skipped: number;
     warnings: number;
     shopify_synced: number;
     catalog_value: string;
   };
   jobs: Job[];
   products: Product[];
+  pagination: { page: number; page_size: number; total: number; total_pages: number };
   events: Array<{ id: number; level: string; event_type: string; message: string; created_at: string }>;
   sources: string[];
   services: { database: boolean; groq: boolean; shopify: boolean };
@@ -117,9 +125,10 @@ type DashboardData = {
 };
 
 const emptyData: DashboardData = {
-  summary: { total_products: 0, ai_enriched: 0, warnings: 0, shopify_synced: 0, catalog_value: "0" },
+  summary: { total_products: 0, ai_enriched: 0, ai_pending: 0, ai_failed: 0, ai_skipped: 0, warnings: 0, shopify_synced: 0, catalog_value: "0" },
   jobs: [],
   products: [],
+  pagination: { page: 1, page_size: 50, total: 0, total_pages: 1 },
   events: [],
   sources: [],
   services: { database: false, groq: false, shopify: false },
@@ -161,14 +170,20 @@ export default function Home() {
   const [selected, setSelected] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState("");
+  const [aiStatusFilter, setAiStatusFilter] = useState("");
+  const [productPage, setProductPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [drawer, setDrawer] = useState<Product | null>(null);
   const [showNewJob, setShowNewJob] = useState(false);
   const [showSource, setShowSource] = useState(false);
+  const [editingSource, setEditingSource] = useState<SavedSource | null>(null);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showShopify, setShowShopify] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [lastReadEventId, setLastReadEventId] = useState(0);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [showLiveTracker, setShowLiveTracker] = useState(false);
   const [showTrackerDock, setShowTrackerDock] = useState(true);
@@ -197,6 +212,9 @@ export default function Home() {
       const params = new URLSearchParams();
       if (query) params.set("query", query);
       if (sourceFilter) params.set("source", sourceFilter);
+      if (aiStatusFilter) params.set("ai_status", aiStatusFilter);
+      params.set("page", String(productPage));
+      params.set("page_size", String(pageSize));
       const [dataResponse, accountResponse, sourcesResponse, shopifyResponse] = await Promise.all([
         fetch(`/api/data?${params}`, { cache: "no-store" }),
         fetch("/api/account", { cache: "no-store" }),
@@ -221,13 +239,15 @@ export default function Home() {
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [query, sourceFilter]);
+  }, [query, sourceFilter, aiStatusFilter, productPage, pageSize]);
 
   useEffect(() => {
     const initialLoad = window.setTimeout(() => void loadData(), 0);
+    const notificationState = window.setTimeout(() => setLastReadEventId(Number(window.localStorage.getItem("scrappify_last_event") || 0)), 0);
     const interval = window.setInterval(() => void loadData(true), 5000);
     return () => {
       window.clearTimeout(initialLoad);
+      window.clearTimeout(notificationState);
       window.clearInterval(interval);
     };
   }, [loadData]);
@@ -238,6 +258,7 @@ export default function Home() {
   };
 
   const visibleProducts = data.products;
+  const unreadNotifications = data.events.filter((event) => Number(event.id) > lastReadEventId);
   const activeJob = data.jobs.find((job) => job.status === "running" || job.status === "queued");
   const trackedJob = (trackedJobId ? data.jobs.find((job) => job.id === trackedJobId) : undefined) ?? activeJob;
   const lastJob = activeJob ?? data.jobs[0];
@@ -285,8 +306,8 @@ export default function Home() {
     setBusyAction("source");
     const form = new FormData(event.currentTarget);
     try {
-      const response = await fetch("/api/sources", {
-        method: "POST",
+      const response = await fetch(editingSource ? `/api/sources/${editingSource.id}` : "/api/sources", {
+        method: editingSource ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: form.get("name"),
@@ -296,6 +317,7 @@ export default function Home() {
           max_pages: Number(form.get("max_pages")),
           seo_language: form.get("seo_language"),
           auto_enrich: form.get("auto_enrich") === "on",
+          enabled: form.get("enabled") === "on",
         }),
       });
       const payload = await response.json();
@@ -303,9 +325,11 @@ export default function Home() {
       setSelectedSourceId(payload.source.id);
       setSeoLanguage(payload.source.seo_language);
       setShowSource(false);
-      notify("Source saved. You can run it now.");
+      const wasEditing = Boolean(editingSource);
+      setEditingSource(null);
+      notify(wasEditing ? "Source settings updated" : "Source saved. You can run it now.");
       await loadData(true);
-      setShowNewJob(true);
+      if (!wasEditing) setShowNewJob(true);
     } catch (sourceError) {
       notify(sourceError instanceof Error ? sourceError.message : "Could not save source");
     } finally {
@@ -409,6 +433,7 @@ export default function Home() {
   const openRunModal = () => {
     const firstSource = savedSources.find((source) => source.enabled);
     if (!firstSource) {
+      setEditingSource(null);
       setShowSource(true);
       return;
     }
@@ -419,19 +444,50 @@ export default function Home() {
     setShowNewJob(true);
   };
 
+  const openNewSource = () => {
+    setEditingSource(null);
+    setShowSource(true);
+  };
+
+  const openSourceEditor = (source: SavedSource) => {
+    setEditingSource(source);
+    setSeoLanguage(source.seo_language);
+    setShowSource(true);
+  };
+
+  const markNotificationsRead = () => {
+    const newestId = Number(data.events[0]?.id || 0);
+    setLastReadEventId(newestId);
+    window.localStorage.setItem("scrappify_last_event", String(newestId));
+  };
+
+  const openNotification = (eventType: string) => {
+    if (eventType.includes("scrape")) setActive("Sources");
+    else if (eventType.includes("ai")) setActive("AI Studio");
+    else if (eventType.includes("shopify")) setActive("Products");
+    setShowNotifications(false);
+    markNotificationsRead();
+  };
+
   const syncShopify = async () => {
     if (!selected.length) return notify("Select at least one real product first");
     if (!data.services.shopify) return notify("Shopify Admin API is not configured yet");
     setBusyAction("shopify");
     try {
-      const response = await fetch("/api/shopify/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ product_ids: selected }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Shopify sync failed");
-      notify(`${payload.synced.length} products synced to Shopify`);
+      let synced = 0;
+      let failed = 0;
+      for (let index = 0; index < selected.length; index += 50) {
+        const response = await fetch("/api/shopify/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ product_ids: selected.slice(index, index + 50) }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error ?? "Shopify sync failed");
+        synced += payload.synced.length;
+        failed += payload.failed.length;
+      }
+      notify(`${synced} products synced to Shopify${failed ? ` · ${failed} failed` : ""}`);
       await loadData(true);
     } catch (shopifyError) {
       notify(shopifyError instanceof Error ? shopifyError.message : "Shopify sync failed");
@@ -512,6 +568,27 @@ export default function Home() {
     setBusyAction("");
   };
 
+  const saveAccountSetting = async (event: FormEvent<HTMLFormElement>, scope: "organization" | "workspace") => {
+    event.preventDefault();
+    setBusyAction(`settings-${scope}`);
+    const form = new FormData(event.currentTarget);
+    try {
+      const response = await fetch("/api/account", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope, name: form.get("name") }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Could not save settings");
+      notify(`${scope === "organization" ? "Organization" : "Workspace"} settings saved`);
+      await loadData(true);
+    } catch (settingsError) {
+      notify(settingsError instanceof Error ? settingsError.message : "Could not save settings");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const saveShopify = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBusyAction("shopify-settings");
@@ -537,8 +614,36 @@ export default function Home() {
 
   const downloadCsv = () => {
     if (!data.summary.total_products) return notify("There are no real products to export yet");
-    const params = selected.length ? `?ids=${selected.join(",")}` : "";
-    window.location.href = `/api/export${params}`;
+    const params = new URLSearchParams();
+    if (selected.length && selected.length >= data.pagination.total) {
+      params.set("scope", "matching");
+      if (query) params.set("query", query);
+      if (sourceFilter) params.set("source", sourceFilter);
+      if (aiStatusFilter) params.set("ai_status", aiStatusFilter);
+    } else if (selected.length) {
+      params.set("ids", selected.join(","));
+    }
+    window.location.href = `/api/export${params.size ? `?${params}` : ""}`;
+  };
+
+  const selectAllMatching = async (statusOverride?: string) => {
+    setBusyAction("select");
+    try {
+      const params = new URLSearchParams();
+      if (query) params.set("query", query);
+      if (sourceFilter) params.set("source", sourceFilter);
+      const status = statusOverride ?? aiStatusFilter;
+      if (status) params.set("ai_status", status);
+      const response = await fetch(`/api/products/ids?${params}`, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Could not select products");
+      setSelected(payload.ids);
+      notify(`${payload.total} matching products selected`);
+    } catch (selectionError) {
+      notify(selectionError instanceof Error ? selectionError.message : "Could not select products");
+    } finally {
+      setBusyAction("");
+    }
   };
 
   return (
@@ -577,12 +682,43 @@ export default function Home() {
 
       <section className="main-panel">
         <header className="topbar">
-          <div className="crumb"><span>{account?.workspace.name || "Workspace"}</span><b>/</b><strong>{active}</strong></div>
+          <div className="topbar-left">
+            <div className="crumb"><span>{account?.workspace.name || "Workspace"}</span><b>/</b><strong>{active}</strong></div>
+            <span className="system-status"><i /> All systems operational</span>
+          </div>
           <div className="top-actions">
-            <button className="icon-button" aria-label="Notifications"><Bell size={16} /><i /></button>
+            <button className={`icon-button notification-button ${showNotifications ? "active" : ""}`} aria-label="Notifications" onClick={() => {
+              const next = !showNotifications;
+              setShowNotifications(next);
+              if (next) markNotificationsRead();
+            }}>
+              <Bell size={16} />
+              {unreadNotifications.length > 0 && <i />}
+            </button>
             <button className="secondary-button" onClick={() => void loadData()}><RefreshCw size={15} /> Refresh</button>
             <button className="primary-button" onClick={openRunModal}><Plus size={15} />{savedSources.length ? "Run source" : "Add first source"}</button>
           </div>
+          {showNotifications && (
+            <aside className="notification-center">
+              <div className="notification-head">
+                <div><span className="kicker">ACTIVITY CENTER</span><h3>Notifications</h3></div>
+                <button onClick={markNotificationsRead}><Check size={13} /> Mark read</button>
+              </div>
+              <div className="notification-list">
+                {data.events.slice(0, 10).map((event) => (
+                  <button key={event.id} onClick={() => openNotification(event.event_type)}>
+                    <span className={`notification-icon ${event.level}`}>
+                      {event.event_type.includes("ai") ? <Sparkles size={15} /> : event.event_type.includes("shopify") ? <ShoppingBag size={15} /> : <Activity size={15} />}
+                    </span>
+                    <span><strong>{event.message}</strong><small>{formatDate(event.created_at)}</small></span>
+                    {Number(event.id) > lastReadEventId && <i />}
+                  </button>
+                ))}
+                {!data.events.length && <div className="notification-empty"><Bell size={20} /><strong>You are all caught up</strong><span>Scrapes, AI enrichment, and Shopify activity will appear here.</span></div>}
+              </div>
+              <button className="notification-footer" onClick={() => { setShowNotifications(false); setActive("Overview"); }}>View activity overview</button>
+            </aside>
+          )}
         </header>
 
         <div className="content">
@@ -606,7 +742,7 @@ export default function Home() {
                   <h2>{savedSources.length ? `${savedSources[0].name} is ready to run.` : "Add your first product source."}</h2>
                   <p>{savedSources.length ? "Run it now or open Sources to manage collection settings." : "Paste an approved collection URL and choose its default SEO language. Scrappify handles the rest."}</p>
                 </div>
-                <button className="primary-button" onClick={savedSources.length ? openRunModal : () => setShowSource(true)}>
+                <button className="primary-button" onClick={savedSources.length ? openRunModal : openNewSource}>
                   {savedSources.length ? <><RefreshCw size={15} /> Run source</> : <><Plus size={15} /> Add source</>}
                 </button>
                 <div className="onboarding-steps" aria-label="Catalog workflow">
@@ -670,6 +806,8 @@ export default function Home() {
               setQuery={setQuery}
               sourceFilter={sourceFilter}
               setSourceFilter={setSourceFilter}
+              aiStatusFilter={aiStatusFilter}
+              setAiStatusFilter={setAiStatusFilter}
               openProduct={setDrawer}
               openBulkEdit={() => setShowBulkEdit(true)}
               runAi={runAi}
@@ -678,43 +816,88 @@ export default function Home() {
               downloadCsv={downloadCsv}
               busyAction={busyAction}
               onNewJob={openRunModal}
+              pagination={data.pagination}
+              setPage={setProductPage}
+              pageSize={pageSize}
+              setPageSize={setPageSize}
+              selectAllMatching={() => void selectAllMatching()}
             />
           ) : active === "AI Studio" ? (
-            <section className="studio-layout">
-              <article className="panel studio-main">
-                <span className="kicker">LIVE GROQ ENRICHMENT</span>
-                <h2>Enrich only products you select.</h2>
-                <p>The model receives the real title, brand, category and price. It cannot see or invent unavailable product details.</p>
-                <div className="real-selection"><span>{selected.length}</span><p>products selected from this workspace</p></div>
-                {aiProgress && (
-                  <div className="ai-live-progress">
-                    <div><span><Sparkles size={15} /> AI enrichment in progress</span><strong>{aiProgress.completed}/{aiProgress.total}</strong></div>
-                    <div className="progress-track"><i style={{ width: `${Math.round((aiProgress.completed / aiProgress.total) * 100)}%` }} /></div>
-                    <p>{busyAction === "ai" ? `Writing: ${aiProgress.current}` : "Enrichment complete"}{aiProgress.failed ? ` · ${aiProgress.failed} failed` : ""}</p>
-                  </div>
-                )}
-                <label className="language-picker">SEO description language
-                  <select value={seoLanguage} onChange={(event) => setSeoLanguage(event.target.value)}>
-                    {languages.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
-                  </select>
-                </label>
-                <div className="studio-options"><label><input type="checkbox" checked readOnly /> Shopify-safe HTML</label><label><input type="checkbox" checked readOnly /> Source-name removal</label><label><input type="checkbox" checked readOnly /> Safe tag suggestions</label><label><input type="checkbox" checked readOnly /> Factual-only prompt</label></div>
-                <button className="primary-button wide" disabled={!selected.length || busyAction === "ai" || !data.services.groq} onClick={() => void runAi()}>
-                  {busyAction === "ai" ? <><span className="spinner" /> Enriching {aiProgress?.completed || 0} of {aiProgress?.total || selected.length}</> : <><Sparkles size={15} /> Enrich {selected.length} in {languages.find(([code]) => code === seoLanguage)?.[1]}</>}
-                </button>
-              </article>
-              <article className="panel live-queue-panel">
-                <span className="kicker">ENRICHMENT QUEUE</span>
-                <h2>Products awaiting AI</h2>
-                <div className="mini-product-list">
-                  {data.products.filter((product) => product.ai_status !== "enriched").slice(0, 8).map((product) => (
-                    <button key={product.id} onClick={() => setSelected((current) => current.includes(product.id) ? current : [...current, product.id])}>
-                      <ProductThumb product={product} /><span><strong>{product.title}</strong><small>{product.vendor || "Unknown vendor"} · {product.ai_status}</small></span><b>＋</b>
-                    </button>
-                  ))}
-                  {!data.products.some((product) => product.ai_status !== "enriched") && <EmptyState title="No pending products" detail="Scrape real products first, or all current products are already enriched." />}
+            <section className="ai-studio-page">
+              <div className="ai-studio-hero">
+                <div>
+                  <span className="kicker">AI CATALOG STUDIO</span>
+                  <h2>Know exactly what is ready—and what needs attention.</h2>
+                  <p>Filter the complete catalog by enrichment status, select a page or every matching product, then watch each description complete live.</p>
                 </div>
-              </article>
+                <div className="ai-hero-actions">
+                  <button className="secondary-button" disabled={!data.summary.ai_pending || busyAction === "select"} onClick={() => void selectAllMatching("pending")}><CheckCircle2 size={14} /> Select all pending</button>
+                  <button className="primary-button" disabled={!selected.length || busyAction === "ai" || !data.services.groq} onClick={() => void runAi()}><Sparkles size={14} /> Enrich {selected.length || "selected"}</button>
+                </div>
+              </div>
+
+              <div className="ai-status-grid">
+                <button className={aiStatusFilter === "" ? "active" : ""} onClick={() => { setAiStatusFilter(""); setProductPage(1); }}><span className="ai-status-icon all"><Boxes size={17} /></span><span><small>ALL PRODUCTS</small><strong>{data.summary.total_products.toLocaleString()}</strong></span><i>100%</i></button>
+                <button className={aiStatusFilter === "pending" ? "active" : ""} onClick={() => { setAiStatusFilter("pending"); setProductPage(1); }}><span className="ai-status-icon pending"><Timer size={17} /></span><span><small>PENDING</small><strong>{data.summary.ai_pending.toLocaleString()}</strong></span><i>Needs copy</i></button>
+                <button className={aiStatusFilter === "enriched" ? "active" : ""} onClick={() => { setAiStatusFilter("enriched"); setProductPage(1); }}><span className="ai-status-icon enriched"><Sparkles size={17} /></span><span><small>ENRICHED</small><strong>{data.summary.ai_enriched.toLocaleString()}</strong></span><i>{aiCoverage}% ready</i></button>
+                <button className={aiStatusFilter === "failed" ? "active" : ""} onClick={() => { setAiStatusFilter("failed"); setProductPage(1); }}><span className="ai-status-icon failed"><X size={17} /></span><span><small>FAILED</small><strong>{data.summary.ai_failed.toLocaleString()}</strong></span><i>Retryable</i></button>
+              </div>
+
+              <div className="ai-workbench">
+                <article className="panel ai-control-panel">
+                  <div className="ai-control-head"><span className="ai-control-icon"><Sparkles size={19} /></span><div><span className="kicker">ENRICHMENT SETTINGS</span><h3>Prepare selected products</h3></div></div>
+                  <label className="language-picker">SEO description language
+                    <select value={seoLanguage} onChange={(event) => setSeoLanguage(event.target.value)}>
+                      {languages.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+                    </select>
+                  </label>
+                  <div className="ai-policy-list">
+                    <span><Check size={13} /> Shopify-safe HTML</span>
+                    <span><Check size={13} /> Factual product copy only</span>
+                    <span><Check size={13} /> Source retailer removed</span>
+                    <span><Check size={13} /> Search-friendly tags</span>
+                  </div>
+                  <div className="ai-selection-summary"><strong>{selected.length}</strong><span><b>products selected</b><small>{selected.length ? "Ready for enrichment" : "Choose products from the queue"}</small></span></div>
+                  {aiProgress && (
+                    <div className="ai-live-progress">
+                      <div><span><Sparkles size={15} /> {busyAction === "ai" ? "Enrichment in progress" : "Enrichment complete"}</span><strong>{aiProgress.completed}/{aiProgress.total}</strong></div>
+                      <div className="progress-track"><i style={{ width: `${Math.round((aiProgress.completed / aiProgress.total) * 100)}%` }} /></div>
+                      <p>{busyAction === "ai" ? `Writing: ${aiProgress.current}` : aiProgress.failed ? `${aiProgress.failed} products need attention` : "Every selected product is ready"}</p>
+                    </div>
+                  )}
+                  <button className="primary-button wide" disabled={!selected.length || busyAction === "ai" || !data.services.groq} onClick={() => void runAi()}>
+                    {busyAction === "ai" ? <><span className="spinner" /> Enriching {aiProgress?.completed || 0} of {aiProgress?.total || selected.length}</> : <><Sparkles size={15} /> Enrich {selected.length} in {languages.find(([code]) => code === seoLanguage)?.[1]}</>}
+                  </button>
+                  {data.summary.ai_failed > 0 && <button className="retry-failed-button" disabled={busyAction === "select"} onClick={() => void selectAllMatching("failed")}><RefreshCw size={14} /> Select all {data.summary.ai_failed} failed products to retry</button>}
+                </article>
+
+                <article className="panel ai-queue-panel">
+                  <div className="ai-queue-head">
+                    <div><span className="kicker">PRODUCT QUEUE</span><h3>{aiStatusFilter ? `${aiStatusFilter[0].toUpperCase()}${aiStatusFilter.slice(1)} products` : "All enrichment statuses"}</h3></div>
+                    <span>{data.pagination.total.toLocaleString()} products</span>
+                  </div>
+                  <div className="ai-queue-toolbar">
+                    <label><input type="checkbox" checked={data.products.length > 0 && data.products.every((product) => selected.includes(product.id))} onChange={(event) => setSelected((current) => event.target.checked ? [...new Set([...current, ...data.products.map((product) => product.id)])] : current.filter((id) => !data.products.some((product) => product.id === id)))} /> Select page</label>
+                    <button disabled={busyAction === "select"} onClick={() => void selectAllMatching()}>{busyAction === "select" ? "Selecting…" : `Select all ${data.pagination.total.toLocaleString()}`}</button>
+                    {selected.length > 0 && <button onClick={() => setSelected([])}>Clear</button>}
+                  </div>
+                  <div className="ai-product-queue">
+                    {data.products.map((product) => (
+                      <button className={selected.includes(product.id) ? "selected" : ""} key={product.id} onClick={() => setSelected((current) => current.includes(product.id) ? current.filter((id) => id !== product.id) : [...current, product.id])}>
+                        <span className="queue-check">{selected.includes(product.id) && <Check size={12} />}</span>
+                        <ProductThumb product={product} />
+                        <span className="queue-product-copy"><strong>{product.title}</strong><small>{product.vendor || "Unknown vendor"} · {product.category || "Uncategorized"}</small>{product.ai_status === "failed" && product.ai_error && <em>{product.ai_error}</em>}</span>
+                        <span className={`status-badge ${product.ai_status}`}>{product.ai_status === "enriched" && <Sparkles size={10} />}{product.ai_status}</span>
+                      </button>
+                    ))}
+                    {!data.products.length && <EmptyState title={`No ${aiStatusFilter || "matching"} products`} detail={aiStatusFilter === "failed" ? "No AI failures need attention." : "Change the status filter or collect more products."} />}
+                  </div>
+                  <div className="ai-queue-pagination">
+                    <span>Page {data.pagination.page} of {data.pagination.total_pages}</span>
+                    <div><button disabled={data.pagination.page <= 1} onClick={() => setProductPage(data.pagination.page - 1)}>Previous</button><button disabled={data.pagination.page >= data.pagination.total_pages} onClick={() => setProductPage(data.pagination.page + 1)}>Next</button></div>
+                  </div>
+                </article>
+              </div>
             </section>
           ) : active === "Exports" ? (
             <section className="panel export-page">
@@ -729,7 +912,7 @@ export default function Home() {
             <section className="sources-page">
               <article className="panel source-intro">
                 <div><span className="kicker">REUSABLE COLLECTIONS</span><h2>Saved sources</h2><p>Store an approved category URL, run settings, and default SEO language once.</p></div>
-                <div className="source-actions"><button className="secondary-button" onClick={() => setShowSource(true)}>＋ Save source</button><button className="primary-button" onClick={() => setShowNewJob(true)}>＋ Queue scrape</button></div>
+                <div className="source-actions"><button className="secondary-button" onClick={openNewSource}><Plus size={15} /> Add source</button><button className="primary-button" onClick={openRunModal}><RefreshCw size={15} /> Run source</button></div>
               </article>
               <div className="saved-source-grid">
                 {savedSources.map((source) => (
@@ -737,10 +920,11 @@ export default function Home() {
                     key={source.id}
                     source={source}
                     onRun={() => { setSelectedSourceId(source.id); setSeoLanguage(source.seo_language); setShowNewJob(true); }}
+                    onEdit={() => openSourceEditor(source)}
                     onDelete={() => void deleteSource(source.id)}
                   />
                 ))}
-                {!savedSources.length && <article className="panel"><EmptyState title="No saved sources yet" detail="Save a real category URL to reuse its scrape and language settings." action="Save first source" onAction={() => setShowSource(true)} /></article>}
+                {!savedSources.length && <article className="panel"><EmptyState title="No saved sources yet" detail="Save a real category URL to reuse its scrape and language settings." action="Save first source" onAction={openNewSource} /></article>}
               </div>
               <article className="panel source-intro jobs-heading"><div><span className="kicker">BACKGROUND QUEUE</span><h2>Scrape jobs</h2><p>The browser worker claims queued jobs and updates progress here.</p></div></article>
               <div className="jobs-list">
@@ -749,21 +933,48 @@ export default function Home() {
               </div>
             </section>
           ) : (
-            <section className="settings-grid">
-              <ServiceCard name="Catalog database" configured={data.services.database} detail="Products, scrape jobs, sources and activity are persistent." />
-              <ServiceCard name="Groq AI" configured={data.services.groq} detail="Generates Shopify-safe SEO HTML in eight supported languages." />
-              <article className="panel settings-card">
-                <span className="kicker">WORKSPACE INTEGRATION</span>
-                <h2>Shopify Admin API</h2>
-                <p>{shopifyConnection.configured ? `${shopifyConnection.store_domain} is connected only to this workspace.` : "Connect a store domain and custom-app access token for this workspace."}</p>
-                <div className="setting-row"><span><i className={shopifyConnection.configured ? "" : "offline"} />{shopifyConnection.configured ? "Connected" : "Not configured"}</span><button onClick={() => setShowShopify(true)}>{shopifyConnection.configured ? "Manage" : "Connect"}</button></div>
-              </article>
-              <article className="panel settings-card account-settings">
-                <span className="kicker">ACCOUNT & ACCESS</span>
-                <h2>{account?.organization.name || "Organization"}</h2>
-                <p>{account?.user.email}</p>
-                <div className="setting-row"><span><i />{account?.workspace.name} · {account?.workspace.role}</span></div>
-                <div className="settings-actions"><button onClick={() => setShowWorkspace(true)}>Manage workspaces</button><button onClick={() => void authClient.signOut({ fetchOptions: { onSuccess: () => window.location.assign("/") } })}>Sign out</button></div>
+            <section className="settings-page">
+              <div className="settings-hero panel">
+                <div className="settings-hero-icon"><Settings size={22} /></div>
+                <div><span className="kicker">ORGANIZATION CONTROL CENTER</span><h2>Settings that scale with your operation.</h2><p>Manage business identity, workspace boundaries, production services, and publishing connections.</p></div>
+                <span className="settings-role"><CheckCircle2 size={14} /> {account?.workspace.role || "member"} access</span>
+              </div>
+
+              <div className="settings-section-head"><div><span className="kicker">BUSINESS STRUCTURE</span><h3>Organization & workspace</h3></div><p>Names can be changed without affecting saved products, source history, or integrations.</p></div>
+              <div className="settings-profile-grid">
+                <form key={`org-${account?.organization.name || "loading"}`} className="panel profile-setting-card" onSubmit={(event) => void saveAccountSetting(event, "organization")}>
+                  <div className="setting-card-title"><span className="setting-card-icon"><Users size={18} /></span><div><h4>Organization profile</h4><p>The company or account that owns your workspaces.</p></div></div>
+                  <label>Organization name<input name="name" defaultValue={account?.organization.name || ""} required minLength={2} /></label>
+                  <div className="setting-meta"><span><small>ORGANIZATION ID</small><strong>{account?.organization.slug}</strong></span><span><small>YOUR ACCESS</small><strong>Owner / admin</strong></span></div>
+                  <button className="secondary-button" disabled={busyAction === "settings-organization"}>{busyAction === "settings-organization" ? "Saving…" : "Save organization"}</button>
+                </form>
+                <form key={`workspace-${account?.workspace.name || "loading"}`} className="panel profile-setting-card" onSubmit={(event) => void saveAccountSetting(event, "workspace")}>
+                  <div className="setting-card-title"><span className="setting-card-icon workspace"><Boxes size={18} /></span><div><h4>Current workspace</h4><p>The isolated catalog operation you are working in.</p></div></div>
+                  <label>Workspace name<input name="name" defaultValue={account?.workspace.name || ""} required minLength={2} /></label>
+                  <div className="setting-meta"><span><small>WORKSPACE ID</small><strong>{account?.workspace.slug}</strong></span><span><small>CATALOG</small><strong>{data.summary.total_products.toLocaleString()} products</strong></span></div>
+                  <div className="setting-card-actions"><button className="secondary-button" disabled={busyAction === "settings-workspace"}>{busyAction === "settings-workspace" ? "Saving…" : "Save workspace"}</button><button type="button" onClick={() => setShowWorkspace(true)}>Switch workspace</button></div>
+                </form>
+              </div>
+
+              <div className="settings-section-head"><div><span className="kicker">PRODUCTION SERVICES</span><h3>Connections & readiness</h3></div><p>Each workspace keeps its own Shopify connection while core services remain available across the account.</p></div>
+              <div className="service-settings-grid">
+                <ServiceCard name="Catalog database" configured={data.services.database} detail="Products, jobs, source recipes, and activity history are persistent." />
+                <ServiceCard name="Groq AI" configured={data.services.groq} detail="Shopify-safe SEO copy is available in eight supported languages." />
+                <article className="panel settings-card shopify-setting-card">
+                  <span className="setting-service-icon"><ShoppingBag size={18} /></span>
+                  <span className="kicker">WORKSPACE INTEGRATION</span>
+                  <h2>Shopify Admin API</h2>
+                  <p>{shopifyConnection.configured ? `${shopifyConnection.store_domain} is connected only to this workspace.` : "Connect a store domain and custom-app access token for this workspace."}</p>
+                  <div className="setting-row"><span><i className={shopifyConnection.configured ? "" : "offline"} />{shopifyConnection.configured ? "Connected" : "Not configured"}</span><button onClick={() => setShowShopify(true)}>{shopifyConnection.configured ? "Manage connection" : "Connect Shopify"}</button></div>
+                </article>
+              </div>
+
+              <div className="settings-section-head"><div><span className="kicker">ACCOUNT & SECURITY</span><h3>Your session</h3></div></div>
+              <article className="panel account-security-row">
+                <span className="account-security-avatar">{account?.user.name.slice(0, 1).toUpperCase() || "A"}</span>
+                <span><strong>{account?.user.name}</strong><small>{account?.user.email}</small></span>
+                <span className="security-chip"><CheckCircle2 size={13} /> Authenticated</span>
+                <button onClick={() => void authClient.signOut({ fetchOptions: { onSuccess: () => window.location.assign("/") } })}>Sign out</button>
               </article>
             </section>
           )}
@@ -778,6 +989,7 @@ export default function Home() {
               <span><strong>{trackedJob.status === "queued" ? "Waiting for worker" : trackedJob.status === "running" ? "Collecting live products" : trackedJob.status === "completed" ? "Collection complete" : "Collection stopped"}</strong><b>{trackedJob.progress}%</b></span>
               <span className="tracker-bar"><i style={{ width: `${trackedJob.progress}%` }} /></span>
               <small>{latestTrackedLog?.message || `${trackedJob.category_name} · ${trackedJob.source}`}</small>
+              <span className="tracker-mini-meta"><i>{trackedJob.products_found} products</i><i>{trackedJob.pages_completed}/{trackedJob.max_pages} pages</i><i>{trackedJob.warning_count} warnings</i></span>
             </span>
           </button>
           <button className="tracker-expand" aria-label="Open live scrape tracker" onClick={() => setShowLiveTracker(true)}><Maximize2 size={16} /></button>
@@ -855,40 +1067,65 @@ export default function Home() {
       )}
 
       {showSource && (
-        <div className="drawer-backdrop centered" onClick={() => setShowSource(false)}>
-          <form className="job-modal" onSubmit={saveSource} onClick={(event) => event.stopPropagation()}>
-            <button type="button" className="drawer-close" onClick={() => setShowSource(false)}>×</button>
-            <span className="kicker">SAVE SOURCE</span><h2>Create a reusable source</h2><p>These settings stay inside {account?.workspace.name || "this workspace"} and can be launched whenever you need them.</p>
-            <label>Source label<input name="name" required placeholder="Beymen — Women's Shoes" /></label>
-            <label>Category name<input name="category_name" required placeholder="Women's shoes" /></label>
-            <label>Category URL<input name="category_url" type="url" required placeholder="https://www.beymen.com/tr/..." /></label>
-            <div className="job-form-row"><label>Start page<input name="start_page" type="number" min="1" defaultValue="1" /></label><label>Pages per run<input name="max_pages" type="number" min="1" max="100" defaultValue="1" /></label></div>
-            <label>Default SEO language<select name="seo_language" defaultValue={seoLanguage}>{languages.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></label>
-            <label className="check-row"><input name="auto_enrich" type="checkbox" /> Automatically enrich new products</label>
-            <button className="primary-button wide" disabled={busyAction === "source"}>{busyAction === "source" ? "Saving…" : "Save source"}</button>
+        <div className="drawer-backdrop centered" onClick={() => { setShowSource(false); setEditingSource(null); }}>
+          <form key={editingSource?.id || "new-source"} className="job-modal source-editor-modal" onSubmit={saveSource} onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="drawer-close" onClick={() => { setShowSource(false); setEditingSource(null); }}><X size={18} /></button>
+            <div className="modal-icon source"><Globe2 size={21} /></div>
+            <span className="kicker">{editingSource ? "SOURCE SETTINGS" : "NEW SAVED SOURCE"}</span>
+            <h2>{editingSource ? "Edit collection source" : "Create a reusable source"}</h2>
+            <p>{editingSource ? "Update the source URL, collection range, and enrichment defaults used on future runs." : `Save the collection recipe inside ${account?.workspace.name || "this workspace"}, then run it whenever you need fresh data.`}</p>
+            <div className="source-form-section">
+              <span>Source identity</span>
+              <label>Source label<input name="name" required defaultValue={editingSource?.name || ""} placeholder="Beymen — Women's Shoes" /></label>
+              <label>Category name<input name="category_name" required defaultValue={editingSource?.category_name || ""} placeholder="Women's shoes" /></label>
+              <label>Category URL<input name="category_url" type="url" required defaultValue={editingSource?.category_url || ""} placeholder="https://www.beymen.com/tr/..." /></label>
+            </div>
+            <div className="source-form-section compact">
+              <span>Collection defaults</span>
+              <div className="job-form-row"><label>Start page<input name="start_page" type="number" min="1" defaultValue={editingSource?.start_page || 1} /></label><label>Pages per run<input name="max_pages" type="number" min="1" max="100" defaultValue={editingSource?.max_pages || 1} /></label></div>
+              <label>Default SEO language<select name="seo_language" defaultValue={editingSource?.seo_language || seoLanguage}>{languages.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></label>
+            </div>
+            <div className="source-toggle-list">
+              <label><span><strong>Automatic AI enrichment</strong><small>Generate SEO descriptions after every collection</small></span><input name="auto_enrich" type="checkbox" defaultChecked={editingSource?.auto_enrich || false} /></label>
+              <label><span><strong>Source active</strong><small>Allow this source to be selected for new runs</small></span><input name="enabled" type="checkbox" defaultChecked={editingSource?.enabled ?? true} /></label>
+            </div>
+            <button className="primary-button wide" disabled={busyAction === "source"}>{busyAction === "source" ? "Saving changes…" : editingSource ? "Save source changes" : "Save and continue"}</button>
           </form>
         </div>
       )}
 
       {showWorkspace && (
         <div className="drawer-backdrop centered" onClick={() => setShowWorkspace(false)}>
-          <form className="job-modal account-modal" onSubmit={createWorkspace} onClick={(event) => event.stopPropagation()}>
-            <button type="button" className="drawer-close" onClick={() => setShowWorkspace(false)}>×</button>
-            <span className="kicker">ACCOUNT & WORKSPACES</span><h2>{account?.user.name}</h2><p>{account?.user.email}</p>
-            <div className="workspace-list">
-              {account?.workspaces.map((workspace) => (
-                <button type="button" key={workspace.id} className={workspace.id === account.workspace.id ? "current" : ""} onClick={() => void switchWorkspace(workspace.id)}>
-                  <span><strong>{workspace.name}</strong><small>{workspace.organization_name} · {workspace.role}</small></span><i>{workspace.id === account.workspace.id ? "Current" : "Open"}</i>
-                </button>
-              ))}
+          <section className="account-modal-v2" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="drawer-close" onClick={() => setShowWorkspace(false)}><X size={18} /></button>
+            <div className="account-modal-header">
+              <span className="account-large-avatar">{account?.user.name.slice(0, 1).toUpperCase() || "A"}</span>
+              <div><span className="kicker">ACCOUNT & WORKSPACES</span><h2>{account?.user.name}</h2><p>{account?.user.email}</p></div>
+              <button onClick={() => { setShowWorkspace(false); setActive("Settings"); }}><Settings size={14} /> Account settings</button>
             </div>
-            <div className="account-create">
-              <label>Create<select name="type" defaultValue="workspace"><option value="workspace">Workspace in current organization</option><option value="organization">New organization</option></select></label>
-              <label>Name<input name="name" required placeholder="New catalog workspace" /></label>
-              <button className="primary-button wide" disabled={busyAction === "workspace-create"}>{busyAction === "workspace-create" ? "Creating…" : "Create"}</button>
+            <div className="account-modal-content">
+              <div className="workspace-browser">
+                <div className="workspace-browser-head"><div><h3>Your workspaces</h3><p>Switch between independent catalog operations.</p></div><span>{account?.workspaces.length || 0} total</span></div>
+                <div className="workspace-list">
+                  {account?.workspaces.map((workspace) => (
+                    <button type="button" key={workspace.id} className={workspace.id === account.workspace.id ? "current" : ""} onClick={() => void switchWorkspace(workspace.id)}>
+                      <span className="workspace-list-avatar">{workspace.name.slice(0, 2).toUpperCase()}</span>
+                      <span><strong>{workspace.name}</strong><small>{workspace.organization_name} · {workspace.role}</small></span>
+                      <i>{workspace.id === account.workspace.id ? <><Check size={11} /> Current</> : "Open"}</i>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <form className="workspace-create-card" onSubmit={createWorkspace}>
+                <span className="workspace-create-icon"><Plus size={18} /></span>
+                <div><span className="kicker">CREATE NEW</span><h3>Expand your operation</h3><p>Add a workspace for another catalog, or start a separate organization.</p></div>
+                <label>What are you creating?<select name="type" defaultValue="workspace"><option value="workspace">Workspace in current organization</option><option value="organization">New organization with a workspace</option></select></label>
+                <label>Name<input name="name" required placeholder="e.g. European catalog" /></label>
+                <button className="primary-button wide" disabled={busyAction === "workspace-create"}>{busyAction === "workspace-create" ? "Creating…" : <><Plus size={14} /> Create workspace</>}</button>
+              </form>
             </div>
-            <button type="button" className="signout-link" onClick={() => void authClient.signOut({ fetchOptions: { onSuccess: () => window.location.assign("/") } })}>Sign out of Scrappify</button>
-          </form>
+            <div className="account-modal-footer"><span><CheckCircle2 size={14} /> Products and sources stay isolated by workspace</span><button onClick={() => void authClient.signOut({ fetchOptions: { onSuccess: () => window.location.assign("/") } })}>Sign out</button></div>
+          </section>
         </div>
       )}
 
@@ -986,10 +1223,20 @@ type TableProps = {
   shopifyReady: boolean;
   downloadCsv: () => void;
   busyAction: string;
+  pagination?: DashboardData["pagination"];
+  setPage?: (page: number) => void;
+  pageSize?: number;
+  setPageSize?: (size: number) => void;
+  selectAllMatching?: () => void;
 };
 
-function ProductTable({ products, selected, setSelected, openProduct, openBulkEdit, runAi, syncShopify, shopifyReady, downloadCsv, busyAction }: TableProps) {
+function ProductTable({ products, selected, setSelected, openProduct, openBulkEdit, runAi, syncShopify, shopifyReady, downloadCsv, busyAction, pagination, setPage, pageSize, setPageSize, selectAllMatching }: TableProps) {
   const toggle = (id: string) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  const allVisibleSelected = products.length > 0 && products.every((product) => selected.includes(product.id));
+  const pageNumbers = pagination
+    ? Array.from({ length: pagination.total_pages }, (_, index) => index + 1)
+      .filter((page) => page === 1 || page === pagination.total_pages || Math.abs(page - pagination.page) <= 2)
+    : [];
   return (
     <section className="panel products-panel">
       <div className="panel-heading product-heading">
@@ -1002,9 +1249,17 @@ function ProductTable({ products, selected, setSelected, openProduct, openBulkEd
           <button className="export-button" onClick={downloadCsv}><Download size={14} /> Export</button>
         </div>
       </div>
+      {pagination && allVisibleSelected && pagination.total > products.length && (
+        <div className="selection-scope-banner">
+          <CheckCircle2 size={15} />
+          <span>{selected.length >= pagination.total ? `All ${pagination.total.toLocaleString()} matching products are selected.` : `All ${products.length} products on this page are selected.`}</span>
+          {selected.length < pagination.total && <button disabled={busyAction === "select"} onClick={selectAllMatching}>{busyAction === "select" ? "Selecting…" : `Select all ${pagination.total.toLocaleString()} matching products`}</button>}
+          {selected.length >= pagination.total && <button onClick={() => setSelected([])}>Clear selection</button>}
+        </div>
+      )}
       {products.length ? (
         <>
-          <div className="table-wrap"><table><thead><tr><th><input aria-label="Select all products" type="checkbox" checked={products.every((product) => selected.includes(product.id))} onChange={(event) => setSelected(event.target.checked ? products.map((product) => product.id) : [])} /></th><th>PRODUCT</th><th>SOURCE</th><th>PRICE</th><th>STOCK</th><th>AI STATUS</th><th>SHOPIFY</th><th /></tr></thead><tbody>
+          <div className="table-wrap"><table><thead><tr><th><input aria-label="Select all products on this page" type="checkbox" checked={allVisibleSelected} onChange={(event) => setSelected((current) => event.target.checked ? [...new Set([...current, ...products.map((product) => product.id)])] : current.filter((id) => !products.some((product) => product.id === id)))} /></th><th>PRODUCT</th><th>SOURCE</th><th>PRICE</th><th>STOCK</th><th>AI STATUS</th><th>SHOPIFY</th><th /></tr></thead><tbody>
             {products.map((product) => <tr key={product.id}>
               <td><input aria-label={`Select ${product.title}`} type="checkbox" checked={selected.includes(product.id)} onChange={() => toggle(product.id)} /></td>
               <td><button className="product-cell" onClick={() => openProduct(product)}><ProductThumb product={product} /><span><strong>{product.title}</strong><small>{product.vendor || "Unknown vendor"}</small></span></button></td>
@@ -1016,7 +1271,24 @@ function ProductTable({ products, selected, setSelected, openProduct, openBulkEd
               <td><button className="row-menu" aria-label={`Edit ${product.title}`} onClick={() => openProduct(product)}><MoreHorizontal size={17} /></button></td>
             </tr>)}
           </tbody></table></div>
-          <div className="table-footer"><span>Showing {products.length} live products</span></div>
+          <div className="table-footer">
+            <span>{pagination ? `Showing ${(pagination.page - 1) * pagination.page_size + 1}–${Math.min(pagination.page * pagination.page_size, pagination.total)} of ${pagination.total.toLocaleString()} products` : `Showing ${products.length} live products`}</span>
+            {pagination && setPage && setPageSize && (
+              <div className="pagination-controls">
+                <label>Rows<select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage?.(1); }}><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
+                <button disabled={pagination.page <= 1} onClick={() => setPage(pagination.page - 1)}>Previous</button>
+                <span className="page-numbers">
+                  {pageNumbers.map((page, index) => (
+                    <span key={page}>
+                      {index > 0 && pageNumbers[index - 1] !== page - 1 && <i>…</i>}
+                      <button className={page === pagination.page ? "current" : ""} onClick={() => setPage(page)}>{page}</button>
+                    </span>
+                  ))}
+                </span>
+                <button disabled={pagination.page >= pagination.total_pages} onClick={() => setPage(pagination.page + 1)}>Next</button>
+              </div>
+            )}
+          </div>
         </>
       ) : <EmptyState title="No products in this workspace" detail="Run the browser worker against a real source. Products will appear here automatically." />}
     </section>
@@ -1029,10 +1301,12 @@ function ProductWorkspace(props: TableProps & {
   setQuery: (value: string) => void;
   sourceFilter: string;
   setSourceFilter: (value: string) => void;
+  aiStatusFilter: string;
+  setAiStatusFilter: (value: string) => void;
   onNewJob: () => void;
 }) {
   return <section className="product-workspace">
-    <div className="filters standalone"><label className="search"><Search size={16} /><input aria-label="Search live products" placeholder="Search products…" value={props.query} onChange={(event) => props.setQuery(event.target.value)} /></label><select aria-label="Filter by real source" value={props.sourceFilter} onChange={(event) => props.setSourceFilter(event.target.value)}><option value="">All sources</option>{props.sources.map((source) => <option key={source}>{source}</option>)}</select><button className="filter-button" onClick={props.onNewJob}><Plus size={15} /> Run source</button></div>
+    <div className="filters standalone"><label className="search"><Search size={16} /><input aria-label="Search live products" placeholder="Search products…" value={props.query} onChange={(event) => { props.setQuery(event.target.value); props.setPage?.(1); }} /></label><select aria-label="Filter by real source" value={props.sourceFilter} onChange={(event) => { props.setSourceFilter(event.target.value); props.setPage?.(1); }}><option value="">All sources</option>{props.sources.map((source) => <option key={source}>{source}</option>)}</select><select aria-label="Filter by AI status" value={props.aiStatusFilter} onChange={(event) => { props.setAiStatusFilter(event.target.value); props.setPage?.(1); }}><option value="">All AI statuses</option><option value="pending">Pending AI</option><option value="enriched">Enriched</option><option value="failed">Failed</option><option value="skipped">Skipped</option></select><button className="filter-button" onClick={props.onNewJob}><Plus size={15} /> Run source</button></div>
     <ProductTable {...props} />
   </section>;
 }
@@ -1045,7 +1319,7 @@ function JobCard({ job, onCancel }: { job: Job; onCancel: (id: string) => void }
   return <article className="panel job-card"><div className="job-card-head"><span className={`status-badge ${job.status}`}>{job.status}</span><small>{formatDate(job.created_at)}</small></div><h3>{job.category_name}</h3><p>{job.category_url}</p><div className="progress-track"><i style={{ width: `${job.progress}%` }} /></div><div className="job-stats"><span><b>{job.products_found}</b> products</span><span><b>{job.pages_completed}/{job.max_pages}</b> pages</span><span><b>{job.warning_count}</b> warnings</span></div>{job.error && <div className="job-error">{job.error}</div>}{(job.status === "queued" || job.status === "running") && <button onClick={() => onCancel(job.id)}>Cancel job</button>}</article>;
 }
 
-function SourceCard({ source, onRun, onDelete }: { source: SavedSource; onRun: () => void; onDelete: () => void }) {
+function SourceCard({ source, onRun, onEdit, onDelete }: { source: SavedSource; onRun: () => void; onEdit: () => void; onDelete: () => void }) {
   const language = languages.find(([code]) => code === source.seo_language)?.[1] ?? source.seo_language;
   return (
     <article className="panel saved-source-card">
@@ -1053,11 +1327,11 @@ function SourceCard({ source, onRun, onDelete }: { source: SavedSource; onRun: (
       <h3>{source.category_name}</h3>
       <p>{source.category_url}</p>
       <div className="source-details"><span><small>PAGES</small><strong>{source.start_page}–{source.start_page + source.max_pages - 1}</strong></span><span><small>SEO LANGUAGE</small><strong>{language}</strong></span><span><small>AI</small><strong>{source.auto_enrich ? "Automatic" : "Manual"}</strong></span></div>
-      <div className="source-card-actions"><button onClick={onRun}>Run source</button><button className="danger-link" onClick={onDelete}>Remove</button></div>
+      <div className="source-card-actions"><button className="run-source-button" onClick={onRun}><RefreshCw size={13} /> Run source</button><button onClick={onEdit}><PencilLine size={13} /> Edit</button><button className="danger-link" onClick={onDelete}>Remove</button></div>
     </article>
   );
 }
 
 function ServiceCard({ name, configured, detail }: { name: string; configured: boolean; detail: string }) {
-  return <article className="panel settings-card"><span className="kicker">PRODUCTION SERVICE</span><h2>{name}</h2><p>{detail}</p><div className="setting-row"><span><i className={configured ? "" : "offline"} />{configured ? "Connected" : "Not configured"}</span></div></article>;
+  return <article className="panel settings-card"><span className="setting-service-icon">{name.includes("Groq") ? <Sparkles size={18} /> : <Boxes size={18} />}</span><span className="kicker">PRODUCTION SERVICE</span><h2>{name}</h2><p>{detail}</p><div className="setting-row"><span><i className={configured ? "" : "offline"} />{configured ? "Operational" : "Not configured"}</span></div></article>;
 }

@@ -7,7 +7,7 @@ export async function PATCH(request: Request) {
     if (!auth.context) return auth.response;
     const input = await request.json();
     const productIds = Array.isArray(input.product_ids)
-      ? input.product_ids.map(String).slice(0, 250)
+      ? input.product_ids.map(String).slice(0, 5000)
       : [];
     if (!productIds.length) {
       return Response.json({ error: "Select at least one product" }, { status: 400 });

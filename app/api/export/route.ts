@@ -19,7 +19,13 @@ export async function GET(request: Request) {
     const auth = await requireWorkspace(request);
     if (!auth.context) return auth.response;
     const sql = db();
-    const ids = (new URL(request.url).searchParams.get("ids") ?? "").split(",").filter(Boolean);
+    const url = new URL(request.url);
+    const ids = (url.searchParams.get("ids") ?? "").split(",").filter(Boolean);
+    const scope = url.searchParams.get("scope") ?? "";
+    const query = (url.searchParams.get("query") ?? "").trim();
+    const source = (url.searchParams.get("source") ?? "").trim();
+    const aiStatus = (url.searchParams.get("ai_status") ?? "").trim();
+    const searchPattern = `%${query}%`;
     const products = ids.length
       ? await sql`
           SELECT * FROM products
@@ -27,6 +33,15 @@ export async function GET(request: Request) {
             AND workspace_id = ${auth.context.workspace.id}::uuid
           ORDER BY updated_at DESC
         `
+      : scope === "matching"
+        ? await sql`
+            SELECT * FROM products
+            WHERE workspace_id = ${auth.context.workspace.id}::uuid
+              AND (${query} = '' OR title ILIKE ${searchPattern} OR vendor ILIKE ${searchPattern})
+              AND (${source} = '' OR source = ${source})
+              AND (${aiStatus} = '' OR ai_status = ${aiStatus})
+            ORDER BY updated_at DESC
+          `
       : await sql`
           SELECT * FROM products
           WHERE workspace_id = ${auth.context.workspace.id}::uuid

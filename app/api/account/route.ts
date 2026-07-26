@@ -90,3 +90,56 @@ export async function POST(request: Request) {
     return jsonError(error);
   }
 }
+
+export async function PATCH(request: Request) {
+  try {
+    const auth = await requireWorkspace(request);
+    if (!auth.context) return auth.response;
+    const payload = await request.json();
+    const name = String(payload.name || "").trim().slice(0, 80);
+    if (name.length < 2) {
+      return Response.json({ error: "Enter a name with at least 2 characters" }, { status: 400 });
+    }
+    const sql = db();
+
+    if (payload.scope === "organization") {
+      const membership = await sql`
+        SELECT role FROM organization_members
+        WHERE organization_id = ${auth.context.organization.id}::uuid
+          AND user_id = ${auth.context.user.id}
+          AND role IN ('owner', 'admin')
+      `;
+      if (!membership.length) {
+        return Response.json({ error: "Owner or admin access required" }, { status: 403 });
+      }
+      const rows = await sql`
+        UPDATE organizations SET name = ${name}, updated_at = now()
+        WHERE id = ${auth.context.organization.id}::uuid
+        RETURNING id, name, slug
+      `;
+      return Response.json({ organization: rows[0] });
+    }
+
+    if (payload.scope === "workspace") {
+      const membership = await sql`
+        SELECT role FROM workspace_members
+        WHERE workspace_id = ${auth.context.workspace.id}::uuid
+          AND user_id = ${auth.context.user.id}
+          AND role IN ('owner', 'admin')
+      `;
+      if (!membership.length) {
+        return Response.json({ error: "Owner or admin access required" }, { status: 403 });
+      }
+      const rows = await sql`
+        UPDATE workspaces SET name = ${name}, updated_at = now()
+        WHERE id = ${auth.context.workspace.id}::uuid
+        RETURNING id, name, slug
+      `;
+      return Response.json({ workspace: rows[0] });
+    }
+
+    return Response.json({ error: "Unsupported settings scope" }, { status: 400 });
+  } catch (error) {
+    return jsonError(error, 400);
+  }
+}
