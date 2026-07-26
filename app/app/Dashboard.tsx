@@ -423,13 +423,14 @@ export default function Home() {
         let finalError = "";
 
         for (let attempt = 1; attempt <= 3 && !aiCancelRequested.current; attempt += 1) {
-          logs = [{
+          const activity: AiProcessLog = {
             id: `${productId}-${attempt}-${Date.now()}`,
             title: productTitle,
             status: attempt === 1 ? "running" : "retrying",
             message: attempt === 1 ? "Writing SEO description" : `Retry ${attempt} of 3`,
             at: new Date().toISOString(),
-          }, ...logs].slice(0, 60);
+          };
+          logs = [activity, ...logs].slice(0, 60);
           updateProgress(productTitle, attempt);
 
           try {
@@ -445,13 +446,14 @@ export default function Home() {
             }
             enriched = true;
             succeeded += 1;
-            logs = [{
+            const completedActivity: AiProcessLog = {
               id: `${productId}-success-${Date.now()}`,
               title: productTitle,
               status: "enriched",
               message: `Description completed in ${languages.find(([code]) => code === seoLanguage)?.[1] || "the selected language"}`,
               at: new Date().toISOString(),
-            }, ...logs].slice(0, 60);
+            };
+            logs = [completedActivity, ...logs].slice(0, 60);
             break;
           } catch (aiError) {
             finalError = aiError instanceof Error ? aiError.message : "AI enrichment failed";
@@ -463,13 +465,14 @@ export default function Home() {
 
         if (!enriched && !aiCancelRequested.current) {
           failed += 1;
-          logs = [{
+          const failedActivity: AiProcessLog = {
             id: `${productId}-failed-${Date.now()}`,
             title: productTitle,
             status: "failed",
             message: finalError || "Could not complete after 3 attempts",
             at: new Date().toISOString(),
-          }, ...logs].slice(0, 60);
+          };
+          logs = [failedActivity, ...logs].slice(0, 60);
         }
         updateProgress(productTitle, 0);
       }
