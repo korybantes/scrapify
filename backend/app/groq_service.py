@@ -1,5 +1,6 @@
 import html
 import re
+import time
 from uuid import UUID
 
 import httpx
@@ -58,25 +59,33 @@ def _groq_completion(settings, messages: list[dict]) -> str:
 
 
 def _ollama_completion(settings, messages: list[dict]) -> str:
-    response = httpx.post(
-        f"{settings.ollama_url.rstrip('/')}/api/chat",
-        json={
-            "model": settings.ollama_model,
-            "messages": messages,
-            "stream": False,
-            "think": False,
-            "keep_alive": "24h",
-            "options": {
-                "temperature": 0.35,
-                "num_predict": 320,
-                "num_ctx": 2048,
-                "num_thread": 4,
-            },
-        },
-        timeout=180,
-    )
-    response.raise_for_status()
-    return response.json()["message"]["content"]
+    last_error: Exception | None = None
+    for attempt in range(1, 5):
+        try:
+            response = httpx.post(
+                f"{settings.ollama_url.rstrip('/')}/api/chat",
+                json={
+                    "model": settings.ollama_model,
+                    "messages": messages,
+                    "stream": False,
+                    "think": False,
+                    "keep_alive": "24h",
+                    "options": {
+                        "temperature": 0.35,
+                        "num_predict": 320,
+                        "num_ctx": 2048,
+                        "num_thread": 4,
+                    },
+                },
+                timeout=180,
+            )
+            response.raise_for_status()
+            return response.json()["message"]["content"]
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+            last_error = exc
+            if attempt < 4:
+                time.sleep(attempt * 2)
+    raise RuntimeError(f"Local AI is unavailable after 4 connection attempts: {last_error}")
 
 
 def _generate(settings, messages: list[dict]) -> tuple[str, str]:
