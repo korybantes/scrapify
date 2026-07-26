@@ -172,18 +172,18 @@ def _extract_product(card, source: str, category: str) -> dict | None:
     }
 
 
-def _upsert_product(product: dict) -> UUID:
+def _upsert_product(product: dict, workspace_id: UUID) -> UUID:
     with connection() as conn:
         row = conn.execute(
             """INSERT INTO products (
-                 source, source_product_url, title, vendor, category,
+                 workspace_id, source, source_product_url, title, vendor, category,
                  sale_price, compare_at_price, image_url, price_warning, raw_data
                ) VALUES (
-                 %(source)s, %(source_product_url)s, %(title)s, %(vendor)s, %(category)s,
+                 %(workspace_id)s, %(source)s, %(source_product_url)s, %(title)s, %(vendor)s, %(category)s,
                  %(sale_price)s, %(compare_at_price)s, %(image_url)s, %(price_warning)s,
                  %(raw_data)s::jsonb
                )
-               ON CONFLICT (source, source_product_url) DO UPDATE SET
+               ON CONFLICT (workspace_id, source, source_product_url) DO UPDATE SET
                  title = EXCLUDED.title,
                  vendor = EXCLUDED.vendor,
                  category = EXCLUDED.category,
@@ -195,13 +195,17 @@ def _upsert_product(product: dict) -> UUID:
                  last_seen_at = now(),
                  updated_at = now()
                RETURNING id""",
-            {**product, "raw_data": __import__("json").dumps(product["raw_data"], ensure_ascii=False)},
+            {
+                **product,
+                "workspace_id": workspace_id,
+                "raw_data": __import__("json").dumps(product["raw_data"], ensure_ascii=False),
+            },
         ).fetchone()
         conn.commit()
     return row["id"]
 
 
-def _log(job_id: UUID, message: str, level: str = "info") -> None:
+def _log(job_id: UUID, workspace_id: UUID, message: str, level: str = "info") -> None:
     with connection() as conn:
         conn.execute(
             """UPDATE scrape_jobs
@@ -212,9 +216,9 @@ def _log(job_id: UUID, message: str, level: str = "info") -> None:
             (level, message, job_id),
         )
         conn.execute(
-            """INSERT INTO activity_events(job_id, level, event_type, message)
-               VALUES (%s, %s, 'scrape_log', %s)""",
-            (job_id, level, message),
+            """INSERT INTO activity_events(workspace_id, job_id, level, event_type, message)
+               VALUES (%s, %s, %s, 'scrape_log', %s)""",
+            (workspace_id, job_id, level, message),
         )
         conn.commit()
 
@@ -227,10 +231,11 @@ def _cancelled(job_id: UUID) -> bool:
 
 def run_scrape_job(job: dict) -> None:
     job_id = job["id"]
+    workspace_id = job["workspace_id"]
     validate_source_url(job["category_url"])
     source_host = urlparse(job["category_url"]).hostname or job["source"]
     found, warnings = 0, 0
-    _log(job_id, f"Starting {job['category_name']} from {source_host}")
+    _log(job_id, workspace_id, f"Starting {job['category_name']} from {source_host}")
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=["--disable-dev-shm-usage"])
@@ -245,13 +250,13 @@ def run_scrape_job(job: dict) -> None:
         page: Page = context.new_page()
         for page_index in range(job["max_pages"]):
             if _cancelled(job_id):
-                _log(job_id, "Job cancelled by user", "warning")
+                _log(job_id, workspace_id, "Job cancelled by user", "warning")
                 browser.close()
                 return
 
             page_number = job["start_page"] + page_index
             url = _paged_url(job["category_url"], page_number)
-            _log(job_id, f"Collecting page {page_number}")
+            _log(job_id, workspace_id, f"Collecting page {page_number}")
             page.goto(url, wait_until="domcontentloaded", timeout=45_000)
             page.wait_for_timeout(2500)
 
@@ -263,9 +268,9 @@ def run_scrape_job(job: dict) -> None:
                     matched_selector = selector
                     break
             if not cards:
-                _log(job_id, f"No product cards found on page {page_number}", "warning")
+                _log(job_id, workspace_id, f"No product cards found on page {page_number}", "warning")
                 break
-            _log(job_id, f"Found {len(cards)} cards with {matched_selector}")
+            _log(job_id, workspace_id, f"Found {len(cards)} cards with {matched_selector}")
 
             page_product_ids: list[UUID] = []
             for card in cards:
@@ -273,12 +278,12 @@ def run_scrape_job(job: dict) -> None:
                     product = _extract_product(card, source_host, job["category_name"])
                     if not product:
                         continue
-                    product_id = _upsert_product(product)
+                    product_id = _upsert_product(product, workspace_id)
                     page_product_ids.append(product_id)
                     found += 1
                     warnings += int(bool(product["price_warning"]))
                 except Exception as exc:
-                    _log(job_id, f"Skipped one product card: {exc}", "warning")
+                    _log(job_id, workspace_id, f"Skipped one product card: {exc}", "warning")
 
             progress = int(((page_index + 1) / job["max_pages"]) * 100)
             with connection() as conn:
@@ -294,9 +299,9 @@ def run_scrape_job(job: dict) -> None:
             if job["auto_enrich"]:
                 for product_id in page_product_ids:
                     try:
-                        enrich_product(product_id)
+                        enrich_product(product_id, workspace_id, job["seo_language"])
                     except Exception as exc:
-                        _log(job_id, f"AI enrichment failed for {product_id}: {exc}", "warning")
+                        _log(job_id, workspace_id, f"AI enrichment failed for {product_id}: {exc}", "warning")
             time.sleep(1.2)
         browser.close()
 
@@ -308,11 +313,11 @@ def run_scrape_job(job: dict) -> None:
             (found, warnings, job_id),
         )
         conn.execute(
-            """INSERT INTO activity_events(job_id, event_type, message, metadata)
-               VALUES (%s, 'scrape_completed', %s, jsonb_build_object(
+            """INSERT INTO activity_events(workspace_id, job_id, event_type, message, metadata)
+               VALUES (%s, %s, 'scrape_completed', %s, jsonb_build_object(
                  'products_found', %s, 'warnings', %s
                ))""",
-            (job_id, f"Scrape completed with {found} products", found, warnings),
+            (workspace_id, job_id, f"Scrape completed with {found} products", found, warnings),
         )
         conn.commit()
-    _log(job_id, f"Completed: {found} products, {warnings} warnings")
+    _log(job_id, workspace_id, f"Completed: {found} products, {warnings} warnings")

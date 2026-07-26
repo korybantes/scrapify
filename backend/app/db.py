@@ -9,7 +9,7 @@ from .config import get_settings
 
 settings = get_settings()
 pool = ConnectionPool(
-    conninfo=settings.neon_db_url,
+    conninfo=settings.database_url,
     min_size=0,
     max_size=8,
     kwargs={"autocommit": False, "row_factory": dict_row},
@@ -35,10 +35,15 @@ def connection():
 
 
 def migrate() -> None:
-    migration = Path(__file__).resolve().parent.parent / "migrations" / "001_initial.sql"
-    statements = [statement.strip() for statement in migration.read_text(encoding="utf-8").split("-- statement-breakpoint") if statement.strip()]
+    migration_dir = Path(__file__).resolve().parent.parent / "migrations"
     with connection() as conn:
         with conn.cursor() as cur:
-            for statement in statements:
-                cur.execute(statement)
+            for migration in sorted(migration_dir.glob("*.sql")):
+                statements = [
+                    statement.strip()
+                    for statement in migration.read_text(encoding="utf-8").split("-- statement-breakpoint")
+                    if statement.strip()
+                ]
+                for statement in statements:
+                    cur.execute(statement)
         conn.commit()

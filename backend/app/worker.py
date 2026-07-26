@@ -39,17 +39,17 @@ def claim_next_job() -> dict | None:
     return {**job, "status": "running"}
 
 
-def fail_job(job_id, exc: Exception) -> None:
+def fail_job(job: dict, exc: Exception) -> None:
     with connection() as conn:
         conn.execute(
             """UPDATE scrape_jobs SET status = 'failed', error = %s,
                completed_at = now() WHERE id = %s""",
-            (str(exc)[:2000], job_id),
+            (str(exc)[:2000], job["id"]),
         )
         conn.execute(
-            """INSERT INTO activity_events(job_id, level, event_type, message)
-               VALUES (%s, 'error', 'scrape_failed', %s)""",
-            (job_id, f"Scrape failed: {exc}"),
+            """INSERT INTO activity_events(workspace_id, job_id, level, event_type, message)
+               VALUES (%s, %s, 'error', 'scrape_failed', %s)""",
+            (job["workspace_id"], job["id"], f"Scrape failed: {exc}"),
         )
         conn.commit()
 
@@ -71,7 +71,7 @@ def main() -> None:
             run_scrape_job(job)
         except Exception as exc:
             logger.exception("Job %s failed", job["id"])
-            fail_job(job["id"], exc)
+            fail_job(job, exc)
     close_pool()
 
 

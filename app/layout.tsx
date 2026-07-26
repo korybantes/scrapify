@@ -1,10 +1,6 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
-
-const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
-const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -13,19 +9,19 @@ export async function generateMetadata(): Promise<Metadata> {
   const origin = `${protocol}://${host}`;
 
   return {
-    title: "Scrappify — Commerce Intelligence",
-    description: "Scrape, enrich, review and publish product catalogs to Shopify.",
+    title: "Scrappify — Commerce Operations for Shopify",
+    description: "Collect real product catalogs, enrich SEO copy in eight languages, review, and publish to Shopify.",
     openGraph: {
-      title: "Scrappify — Commerce Intelligence",
-      description: "From source to Shopify, beautifully.",
+      title: "Scrappify — Commerce Operations for Shopify",
+      description: "From live source to multilingual Shopify catalog.",
       type: "website",
-      images: [{ url: `${origin}/og-v2.png`, width: 1536, height: 1024, alt: "Scrappify real product data pipeline" }],
+      images: [{ url: `${origin}/og-v3.png`, width: 1536, height: 1024, alt: "Scrappify real catalog operations pipeline" }],
     },
     twitter: {
       card: "summary_large_image",
-      title: "Scrappify — Commerce Intelligence",
-      description: "From source to Shopify, beautifully.",
-      images: [`${origin}/og-v2.png`],
+      title: "Scrappify — Commerce Operations for Shopify",
+      description: "From live source to multilingual Shopify catalog.",
+      images: [`${origin}/og-v3.png`],
     },
   };
 }
@@ -33,7 +29,7 @@ export async function generateMetadata(): Promise<Metadata> {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>
+      <body>{children}</body>
     </html>
   );
 }

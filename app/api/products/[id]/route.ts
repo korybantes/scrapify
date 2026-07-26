@@ -1,4 +1,5 @@
 import { db, jsonError } from "@/app/lib/server-db";
+import { requireWorkspace } from "@/app/lib/workspace";
 
 const editableFields = new Set([
   "title",
@@ -14,6 +15,8 @@ const editableFields = new Set([
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireWorkspace(request);
+    if (!auth.context) return auth.response;
     const { id } = await context.params;
     const input = await request.json();
     const payload = Object.fromEntries(
@@ -32,7 +35,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         published = CASE WHEN ${"published" in payload} THEN ${payload.published as boolean ?? false} ELSE published END,
         inventory_qty = CASE WHEN ${"inventory_qty" in payload} THEN ${payload.inventory_qty as number ?? 0} ELSE inventory_qty END,
         updated_at = now()
-      WHERE id = ${id}::uuid
+      WHERE id = ${id}::uuid AND workspace_id = ${auth.context.workspace.id}::uuid
       RETURNING *
     `;
     if (!rows.length) return Response.json({ error: "Product not found" }, { status: 404 });

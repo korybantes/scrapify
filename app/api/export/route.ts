@@ -1,4 +1,5 @@
 import { db, jsonError } from "@/app/lib/server-db";
+import { requireWorkspace } from "@/app/lib/workspace";
 
 const columns = [
   "Handle", "Title", "Body (HTML)", "Vendor", "Product Category", "Type",
@@ -15,11 +16,22 @@ const slugify = (value: string) =>
 
 export async function GET(request: Request) {
   try {
+    const auth = await requireWorkspace(request);
+    if (!auth.context) return auth.response;
     const sql = db();
     const ids = (new URL(request.url).searchParams.get("ids") ?? "").split(",").filter(Boolean);
     const products = ids.length
-      ? await sql`SELECT * FROM products WHERE id = ANY(${ids}::uuid[]) ORDER BY updated_at DESC`
-      : await sql`SELECT * FROM products ORDER BY updated_at DESC`;
+      ? await sql`
+          SELECT * FROM products
+          WHERE id = ANY(${ids}::uuid[])
+            AND workspace_id = ${auth.context.workspace.id}::uuid
+          ORDER BY updated_at DESC
+        `
+      : await sql`
+          SELECT * FROM products
+          WHERE workspace_id = ${auth.context.workspace.id}::uuid
+          ORDER BY updated_at DESC
+        `;
     const rows = products.map((product) => [
       slugify(product.title),
       product.title,

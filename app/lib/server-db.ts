@@ -1,9 +1,9 @@
 import { neon } from "@neondatabase/serverless";
 
 export function db() {
-  const connectionString = process.env.NEON_DB_URL;
+  const connectionString = process.env.DATABASE_URL ?? process.env.NEON_DB_URL;
   if (!connectionString) {
-    throw new Error("NEON_DB_URL is not configured");
+    throw new Error("DATABASE_URL is not configured");
   }
   return neon(connectionString);
 }

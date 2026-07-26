@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, HttpUrl
 
 
 class JobCreate(BaseModel):
+    workspace_id: UUID
     source: str = Field(min_length=2, max_length=80)
     category_name: str = Field(min_length=2, max_length=160)
     category_url: HttpUrl
@@ -13,6 +14,7 @@ class JobCreate(BaseModel):
     max_pages: int = Field(default=1, ge=1, le=100)
     download_images: bool = False
     auto_enrich: bool = False
+    seo_language: str = Field(default="tr", pattern="^(tr|en|de|fr|es|pl|ar|it)$")
 
 
 class JobRead(BaseModel):
@@ -46,4 +48,6 @@ class ProductPatch(BaseModel):
 
 
 class IdList(BaseModel):
+    workspace_id: UUID
     product_ids: list[UUID] = Field(min_length=1, max_length=250)
+    language: str = Field(default="tr", pattern="^(tr|en|de|fr|es|pl|ar|it)$")

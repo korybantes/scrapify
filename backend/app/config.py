@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import BeforeValidator
+from pydantic import AliasChoices, BeforeValidator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    neon_db_url: str
+    database_url: str = Field(validation_alias=AliasChoices("DATABASE_URL", "NEON_DB_URL"))
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
     scrappify_api_key: str | None = None

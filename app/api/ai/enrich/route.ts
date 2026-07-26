@@ -1,8 +1,21 @@
 import { db, jsonError } from "@/app/lib/server-db";
+import { requireWorkspace } from "@/app/lib/workspace";
 
-const systemPrompt = `You are a senior Turkish Shopify ecommerce copywriter.
+const LANGUAGES: Record<string, string> = {
+  tr: "Turkish",
+  en: "English",
+  de: "German",
+  fr: "French",
+  es: "Spanish",
+  pl: "Polish",
+  ar: "Arabic",
+  it: "Italian",
+};
+
+const systemPrompt = (language: string) => `You are a senior Shopify ecommerce copywriter.
 Return only simple Shopify-safe HTML using <p>, <ul>, <li>, and <strong>.
 Write one compact original paragraph and 2-3 short feature bullets.
+Write entirely in ${language}.
 Never mention the source retailer or invent product facts.
 Use a premium, trustworthy tone without exaggerated claims.`;
 
@@ -16,15 +29,21 @@ function cleanHtml(value: string) {
 
 export async function POST(request: Request) {
   try {
+    const auth = await requireWorkspace(request);
+    if (!auth.context) return auth.response;
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) return Response.json({ error: "Groq is not configured" }, { status: 503 });
     const payload = await request.json();
+    const languageCode = LANGUAGES[payload.language] ? payload.language : "tr";
+    const language = LANGUAGES[languageCode];
     const ids = Array.isArray(payload.product_ids) ? payload.product_ids.slice(0, 100) : [];
     if (!ids.length) return Response.json({ error: "Select at least one product" }, { status: 400 });
     const sql = db();
     const products = await sql`
       SELECT id, title, vendor, category, sale_price
-      FROM products WHERE id = ANY(${ids}::uuid[])
+      FROM products
+      WHERE id = ANY(${ids}::uuid[])
+        AND workspace_id = ${auth.context.workspace.id}::uuid
     `;
 
     let enriched = 0;
@@ -39,7 +58,7 @@ export async function POST(request: Request) {
             temperature: 0.45,
             max_completion_tokens: 500,
             messages: [
-              { role: "system", content: systemPrompt },
+              { role: "system", content: systemPrompt(language) },
               {
                 role: "user",
                 content: `Product: ${product.title}\nBrand: ${product.vendor || "Unknown"}\nCategory: ${product.category || "Unknown"}\nPrice: ${product.sale_price || "Unknown"} TRY`,
@@ -54,12 +73,17 @@ export async function POST(request: Request) {
         const tags = [product.vendor, product.category, "parfum"].filter(Boolean);
         await sql`
           UPDATE products SET body_html = ${bodyHtml}, tags = ${tags},
-            ai_status = 'enriched', ai_error = NULL, updated_at = now()
-          WHERE id = ${product.id}
+            ai_status = 'enriched', ai_error = NULL, seo_language = ${languageCode},
+            updated_at = now()
+          WHERE id = ${product.id} AND workspace_id = ${auth.context.workspace.id}::uuid
         `;
         await sql`
-          INSERT INTO activity_events(product_id, event_type, message)
-          VALUES (${product.id}, 'ai_enriched', ${`AI description generated for ${product.title}`})
+          INSERT INTO activity_events(workspace_id, product_id, event_type, message, metadata)
+          VALUES (
+            ${auth.context.workspace.id}::uuid, ${product.id}, 'ai_enriched',
+            ${`AI description generated for ${product.title}`},
+            ${JSON.stringify({ language: languageCode })}::jsonb
+          )
         `;
         enriched += 1;
       } catch (error) {
@@ -67,7 +91,8 @@ export async function POST(request: Request) {
         failed.push({ id: String(product.id), error: message });
         await sql`
           UPDATE products SET ai_status = 'failed', ai_error = ${message.slice(0, 1000)},
-            updated_at = now() WHERE id = ${product.id}
+            updated_at = now()
+          WHERE id = ${product.id} AND workspace_id = ${auth.context.workspace.id}::uuid
         `;
       }
     }

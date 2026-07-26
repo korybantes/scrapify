@@ -1,4 +1,6 @@
 import { db, jsonError } from "@/app/lib/server-db";
+import { decryptSecret } from "@/app/lib/secrets";
+import { requireWorkspace } from "@/app/lib/workspace";
 
 const mutation = `
 mutation UpsertProduct($input: ProductSetInput!, $identifier: ProductSetIdentifiers) {
@@ -13,16 +15,26 @@ const slugify = (value: string) =>
 
 export async function POST(request: Request) {
   try {
-    const domain = process.env.SHOPIFY_STORE_DOMAIN;
-    const token = process.env.SHOPIFY_ACCESS_TOKEN;
-    if (!domain || !token) {
-      return Response.json({ error: "Shopify Admin API is not configured" }, { status: 503 });
-    }
+    const auth = await requireWorkspace(request);
+    if (!auth.context) return auth.response;
+    const sql = db();
+    const integrations = await sql`
+      SELECT store_domain, access_token_encrypted, api_version
+      FROM workspace_shopify_integrations
+      WHERE workspace_id = ${auth.context.workspace.id}::uuid
+    `;
+    if (!integrations.length) return Response.json({ error: "Connect Shopify for this workspace first" }, { status: 503 });
+    const domain = String(integrations[0].store_domain);
+    const token = await decryptSecret(String(integrations[0].access_token_encrypted));
+    const apiVersion = String(integrations[0].api_version);
     const payload = await request.json();
     const ids = Array.isArray(payload.product_ids) ? payload.product_ids.slice(0, 100) : [];
     if (!ids.length) return Response.json({ error: "Select at least one product" }, { status: 400 });
-    const sql = db();
-    const products = await sql`SELECT * FROM products WHERE id = ANY(${ids}::uuid[])`;
+    const products = await sql`
+      SELECT * FROM products
+      WHERE id = ANY(${ids}::uuid[])
+        AND workspace_id = ${auth.context.workspace.id}::uuid
+    `;
     const synced: Array<{ id: string; shopify_product_id: string }> = [];
     const failed: Array<{ id: string; error: string }> = [];
 
@@ -38,7 +50,7 @@ export async function POST(request: Request) {
           variant.compareAtPrice = String(product.compare_at_price);
         }
         const response = await fetch(
-          `https://${domain}/admin/api/${process.env.SHOPIFY_API_VERSION ?? "2026-07"}/graphql.json`,
+          `https://${domain}/admin/api/${apiVersion}/graphql.json`,
           {
             method: "POST",
             headers: { "X-Shopify-Access-Token": token, "Content-Type": "application/json" },
@@ -69,18 +81,22 @@ export async function POST(request: Request) {
         await sql`
           UPDATE products SET shopify_product_id = ${shopifyProduct.id},
             shopify_status = ${String(shopifyProduct.status).toLowerCase()},
-            updated_at = now() WHERE id = ${product.id}
+            updated_at = now()
+          WHERE id = ${product.id} AND workspace_id = ${auth.context.workspace.id}::uuid
         `;
         await sql`
-          INSERT INTO activity_events(product_id, event_type, message, metadata)
-          VALUES (${product.id}, 'shopify_synced', ${`Synced ${product.title} to Shopify`},
+          INSERT INTO activity_events(workspace_id, product_id, event_type, message, metadata)
+          VALUES (${auth.context.workspace.id}::uuid, ${product.id}, 'shopify_synced', ${`Synced ${product.title} to Shopify`},
             ${JSON.stringify({ shopify_product_id: shopifyProduct.id })}::jsonb)
         `;
         synced.push({ id: String(product.id), shopify_product_id: shopifyProduct.id });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Shopify sync failed";
         failed.push({ id: String(product.id), error: message });
-        await sql`UPDATE products SET shopify_status = 'failed', updated_at = now() WHERE id = ${product.id}`;
+        await sql`
+          UPDATE products SET shopify_status = 'failed', updated_at = now()
+          WHERE id = ${product.id} AND workspace_id = ${auth.context.workspace.id}::uuid
+        `;
       }
     }
     return Response.json({ synced, failed });

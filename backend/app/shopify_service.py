@@ -17,13 +17,16 @@ mutation UpsertProduct($input: ProductSetInput!, $identifier: ProductSetIdentifi
 """
 
 
-def sync_product(product_id: UUID | str) -> dict:
+def sync_product(product_id: UUID | str, workspace_id: UUID | str) -> dict:
     settings = get_settings()
     if not settings.shopify_store_domain or not settings.shopify_access_token:
         raise RuntimeError("Shopify credentials are not configured")
 
     with connection() as conn:
-        product = conn.execute("SELECT * FROM products WHERE id = %s", (product_id,)).fetchone()
+        product = conn.execute(
+            "SELECT * FROM products WHERE id = %s AND workspace_id = %s",
+            (product_id, workspace_id),
+        ).fetchone()
     if not product:
         raise ValueError("Product not found")
 
@@ -75,17 +78,19 @@ def sync_product(product_id: UUID | str) -> dict:
     with connection() as conn:
         conn.execute(
             """UPDATE products SET shopify_product_id = %s, shopify_status = %s,
-               updated_at = now() WHERE id = %s""",
+               updated_at = now() WHERE id = %s AND workspace_id = %s""",
             (
                 shopify_product["id"],
                 shopify_product["status"].lower(),
                 product_id,
+                workspace_id,
             ),
         )
         conn.execute(
-            """INSERT INTO activity_events(product_id, event_type, message, metadata)
-               VALUES (%s, 'shopify_synced', %s, %s::jsonb)""",
+            """INSERT INTO activity_events(workspace_id, product_id, event_type, message, metadata)
+               VALUES (%s, %s, 'shopify_synced', %s, %s::jsonb)""",
             (
+                workspace_id,
                 product_id,
                 f"Synced {product['title']} to Shopify",
                 '{"shopify_product_id": "' + shopify_product["id"] + '"}',

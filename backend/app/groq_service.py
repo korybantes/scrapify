@@ -8,9 +8,24 @@ from .config import get_settings
 from .db import connection
 
 
-SYSTEM_PROMPT = """You are a senior Turkish Shopify ecommerce copywriter.
+LANGUAGES = {
+    "tr": "Turkish",
+    "en": "English",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "pl": "Polish",
+    "ar": "Arabic",
+    "it": "Italian",
+}
+
+
+def system_prompt(language: str) -> str:
+    language_name = LANGUAGES.get(language, LANGUAGES["tr"])
+    return f"""You are a senior Shopify ecommerce copywriter.
 Return only simple Shopify-safe HTML using <p>, <ul>, <li>, and <strong>.
 Write one compact original paragraph and 2-3 short feature bullets.
+Write entirely in {language_name}.
 Never mention the source retailer or invent product facts.
 Use a premium, trustworthy, sales-focused tone without exaggerated claims."""
 
@@ -21,7 +36,7 @@ def _clean_html(value: str) -> str:
     return cleaned.strip()
 
 
-def enrich_product(product_id: UUID | str) -> dict:
+def enrich_product(product_id: UUID | str, workspace_id: UUID | str, language: str = "tr") -> dict:
     settings = get_settings()
     if not settings.groq_api_key:
         raise RuntimeError("GROQ_API_KEY is not configured")
@@ -29,8 +44,8 @@ def enrich_product(product_id: UUID | str) -> dict:
     with connection() as conn:
         product = conn.execute(
             """SELECT id, title, vendor, category, sale_price
-               FROM products WHERE id = %s""",
-            (product_id,),
+               FROM products WHERE id = %s AND workspace_id = %s""",
+            (product_id, workspace_id),
         ).fetchone()
     if not product:
         raise ValueError("Product not found")
@@ -54,7 +69,7 @@ def enrich_product(product_id: UUID | str) -> dict:
             "temperature": 0.45,
             "max_completion_tokens": 500,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt(language)},
                 {"role": "user", "content": facts},
             ],
         },
@@ -71,33 +86,33 @@ def enrich_product(product_id: UUID | str) -> dict:
         row = conn.execute(
             """UPDATE products
                SET body_html = %s, tags = %s, ai_status = 'enriched',
-                   ai_error = NULL, updated_at = now()
-               WHERE id = %s
+                   ai_error = NULL, seo_language = %s, updated_at = now()
+               WHERE id = %s AND workspace_id = %s
                RETURNING id, body_html, tags, ai_status""",
-            (body_html, tags, product_id),
+            (body_html, tags, language, product_id, workspace_id),
         ).fetchone()
         conn.execute(
-            """INSERT INTO activity_events(product_id, event_type, message)
-               VALUES (%s, 'ai_enriched', %s)""",
-            (product_id, f"AI description generated for {html.escape(product['title'])}"),
+            """INSERT INTO activity_events(workspace_id, product_id, event_type, message, metadata)
+               VALUES (%s, %s, 'ai_enriched', %s, jsonb_build_object('language', %s::text))""",
+            (workspace_id, product_id, f"AI description generated for {html.escape(product['title'])}", language),
         )
         conn.commit()
     return row
 
 
-def enrich_many(product_ids: list[UUID]) -> dict:
+def enrich_many(product_ids: list[UUID], workspace_id: UUID, language: str = "tr") -> dict:
     enriched, failed = 0, []
     for product_id in product_ids:
         try:
-            enrich_product(product_id)
+            enrich_product(product_id, workspace_id, language)
             enriched += 1
         except Exception as exc:
             failed.append({"id": str(product_id), "error": str(exc)})
             with connection() as conn:
                 conn.execute(
                     """UPDATE products SET ai_status = 'failed', ai_error = %s,
-                       updated_at = now() WHERE id = %s""",
-                    (str(exc)[:1000], product_id),
+                       updated_at = now() WHERE id = %s AND workspace_id = %s""",
+                    (str(exc)[:1000], product_id, workspace_id),
                 )
                 conn.commit()
     return {"enriched": enriched, "failed": failed}
