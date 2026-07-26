@@ -33,9 +33,17 @@ function slugify(value: string) {
 
 async function provisionUser(user: WorkspaceContext["user"]) {
   const sql = db();
-  const memberCount = await sql`SELECT count(*)::int AS count FROM organization_members`;
+  const legacyMembers = await sql`
+    SELECT count(*)::int AS count FROM organization_members
+    WHERE organization_id = ${LEGACY_ORGANIZATION_ID}::uuid
+  `;
+  const designatedOwner = (process.env.INITIAL_OWNER_EMAIL ?? "").trim().toLowerCase();
 
-  if (Number(memberCount[0]?.count ?? 0) === 0) {
+  if (
+    designatedOwner &&
+    user.email.toLowerCase() === designatedOwner &&
+    Number(legacyMembers[0]?.count ?? 0) === 0
+  ) {
     await Promise.all([
       sql`
         INSERT INTO organization_members (organization_id, user_id, role)

@@ -78,6 +78,7 @@ two-service layout for local or compose-based deployment.
 - `BETTER_AUTH_URL`
 - `BETTER_AUTH_TRUSTED_ORIGINS`
 - `WORKSPACE_ENCRYPTION_SECRET`
+- `INITIAL_OWNER_EMAIL` (the only signup allowed to claim the migrated catalog)
 - `GROQ_API_KEY`
 - `GROQ_MODEL`
 - `ALLOWED_SOURCE_HOSTS`
