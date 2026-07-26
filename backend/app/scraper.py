@@ -36,7 +36,7 @@ TITLE_SELECTORS = [
 ]
 
 PRICE_TOKEN_PATTERN = re.compile(
-    r"(?<!\d)(?:"
+    r"(?<![%\d])(?:"
     r"\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?"
     r"|\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?"
     r"|\d+,\d{1,2}"
@@ -126,25 +126,32 @@ def _extract_product(card, source: str, category: str) -> dict | None:
     if not title:
         return None
 
-    sale_price, price_warning = None, None
-    for selector in [
+    campaign_sale = bool(card.query_selector(".m-productCard__campaignPrice"))
+    sale_selectors = [
+        ".m-productCard__campaignPrice",
+        ".m-productCard__newPrice",
         ".m-productPrice__salePrice",
         "[class*='salePrice']",
         "[class*='sale-price']",
         "[class*='price']",
-    ]:
+    ]
+    sale_price, price_warning = None, None
+    for selector in sale_selectors:
         element = card.query_selector(selector)
         if element:
             sale_price, price_warning = parse_price(element.inner_text())
             break
 
-    compare_at, compare_warning = None, None
-    for selector in [
+    compare_selectors = [
+        ".m-productCard__newPrice" if campaign_sale else ".m-productCard__oldPrice",
+        ".m-productCard__oldPrice",
         ".m-productPrice__originalPrice",
         "[class*='originalPrice']",
         "[class*='original-price']",
         "[class*='old-price']",
-    ]:
+    ]
+    compare_at, compare_warning = None, None
+    for selector in compare_selectors:
         element = card.query_selector(selector)
         if element:
             compare_at, compare_warning = parse_price(element.inner_text())

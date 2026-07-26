@@ -23,6 +23,12 @@ class ParsePriceTests(unittest.TestCase):
             (Decimal("12265.00"), None),
         )
 
+    def test_ignores_discount_percentage(self):
+        self.assertEqual(
+            parse_price("-%12\n7.840 TL\n6.860 TL"),
+            (Decimal("7840"), None),
+        )
+
     def test_storage_overflow_is_not_returned(self):
         self.assertEqual(
             parse_price("1000000000000 TL"),
