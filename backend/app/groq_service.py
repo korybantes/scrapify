@@ -24,7 +24,7 @@ def system_prompt(language: str) -> str:
     language_name = LANGUAGES.get(language, LANGUAGES["tr"])
     return f"""You are a senior Shopify ecommerce copywriter.
 Return only simple Shopify-safe HTML using <p>, <ul>, <li>, and <strong>.
-Write one compact original paragraph and 2-3 short feature bullets.
+Write one compact original paragraph and 2-3 short feature bullets, under 120 words total.
 Write entirely in {language_name}.
 Never mention the source retailer or invent product facts.
 Use a premium, trustworthy, sales-focused tone without exaggerated claims."""
@@ -36,10 +36,65 @@ def _clean_html(value: str) -> str:
     return cleaned.strip()
 
 
-def enrich_product(product_id: UUID | str, workspace_id: UUID | str, language: str = "tr") -> dict:
-    settings = get_settings()
+def _groq_completion(settings, messages: list[dict]) -> str:
     if not settings.groq_api_key:
         raise RuntimeError("GROQ_API_KEY is not configured")
+    response = httpx.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {settings.groq_api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": settings.groq_model,
+            "temperature": 0.35,
+            "max_completion_tokens": 320,
+            "messages": messages,
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+
+def _ollama_completion(settings, messages: list[dict]) -> str:
+    response = httpx.post(
+        f"{settings.ollama_url.rstrip('/')}/api/chat",
+        json={
+            "model": settings.ollama_model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "keep_alive": "24h",
+            "options": {
+                "temperature": 0.35,
+                "num_predict": 320,
+                "num_ctx": 2048,
+                "num_thread": 4,
+            },
+        },
+        timeout=180,
+    )
+    response.raise_for_status()
+    return response.json()["message"]["content"]
+
+
+def _generate(settings, messages: list[dict]) -> tuple[str, str]:
+    provider = settings.ai_provider.lower()
+    if provider == "ollama":
+        return _ollama_completion(settings, messages), "ollama"
+    if provider == "groq":
+        return _groq_completion(settings, messages), "groq"
+    try:
+        return _groq_completion(settings, messages), "groq"
+    except (RuntimeError, httpx.HTTPStatusError) as exc:
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code != 429:
+            raise
+        return _ollama_completion(settings, messages), "ollama"
+
+
+def enrich_product(product_id: UUID | str, workspace_id: UUID | str, language: str = "tr") -> dict:
+    settings = get_settings()
 
     with connection() as conn:
         product = conn.execute(
@@ -58,28 +113,16 @@ def enrich_product(product_id: UUID | str, workspace_id: UUID | str, language: s
             f"Price: {product['sale_price'] or 'Unknown'} TRY",
         ]
     )
-    response = httpx.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {settings.groq_api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": settings.groq_model,
-            "temperature": 0.45,
-            "max_completion_tokens": 500,
-            "messages": [
-                {"role": "system", "content": system_prompt(language)},
-                {"role": "user", "content": facts},
-            ],
-        },
-        timeout=60,
+    content, provider = _generate(
+        settings,
+        [
+            {"role": "system", "content": system_prompt(language)},
+            {"role": "user", "content": f"/no_think\n{facts}"},
+        ],
     )
-    response.raise_for_status()
-    content = response.json()["choices"][0]["message"]["content"]
     body_html = _clean_html(content)
     if not body_html:
-        raise RuntimeError("Groq returned an empty description")
+        raise RuntimeError("AI returned an empty description")
 
     tags = sorted({item for item in [product["vendor"], product["category"], "parfum"] if item})
     with connection() as conn:
@@ -94,10 +137,15 @@ def enrich_product(product_id: UUID | str, workspace_id: UUID | str, language: s
         conn.execute(
             """INSERT INTO activity_events(workspace_id, product_id, event_type, message, metadata)
                VALUES (%s, %s, 'ai_enriched', %s, jsonb_build_object('language', %s::text))""",
-            (workspace_id, product_id, f"AI description generated for {html.escape(product['title'])}", language),
+            (
+                workspace_id,
+                product_id,
+                f"AI description generated for {html.escape(product['title'])}",
+                language,
+            ),
         )
         conn.commit()
-    return row
+    return {**row, "provider": provider}
 
 
 def enrich_many(product_ids: list[UUID], workspace_id: UUID, language: str = "tr") -> dict:

@@ -47,7 +47,8 @@ def health():
     return {
         "status": "ok" if database else "degraded",
         "database": database,
-        "groq": bool(settings.groq_api_key),
+        "ai": bool(settings.groq_api_key or settings.ollama_url),
+        "ai_provider": settings.ai_provider,
         "shopify": bool(settings.shopify_store_domain and settings.shopify_access_token),
     }
 

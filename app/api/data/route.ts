@@ -88,7 +88,10 @@ export async function GET(request: Request) {
       account: auth.context,
       services: {
         database: true,
-        groq: Boolean(process.env.GROQ_API_KEY),
+        groq: Boolean(
+          process.env.GROQ_API_KEY ||
+          (process.env.SCRAPPIFY_BACKEND_URL && process.env.SCRAPPIFY_API_KEY)
+        ),
         shopify: Boolean(shopifyRows.length),
       },
     });

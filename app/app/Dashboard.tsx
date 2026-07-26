@@ -929,7 +929,7 @@ export default function Home() {
 
                 <article className="panel ai-panel">
                   <div className="ai-orb"><i /><i /><i /></div>
-                  <span className="kicker">GROQ AI</span>
+                  <span className="kicker">HYBRID AI ENGINE</span>
                   <h2>{data.services.groq ? "AI enrichment is ready." : "AI is not configured."}</h2>
                   <p>{data.services.groq ? "Generate factual Shopify copy in the language you choose for each run." : "Add the AI service secret to enable production enrichment."}</p>
                   <div className="ai-stats"><span><strong>{Math.max(0, data.summary.total_products - data.summary.ai_enriched)}</strong><small>Awaiting AI</small></span><span><strong>{data.summary.ai_enriched}</strong><small>Completed</small></span></div>
@@ -1103,7 +1103,7 @@ export default function Home() {
               <div className="settings-section-head"><div><span className="kicker">PRODUCTION SERVICES</span><h3>Connections & readiness</h3></div><p>Each workspace keeps its own Shopify connection while core services remain available across the account.</p></div>
               <div className="service-settings-grid">
                 <ServiceCard name="Catalog database" configured={data.services.database} detail="Products, jobs, source recipes, and activity history are persistent." />
-                <ServiceCard name="Groq AI" configured={data.services.groq} detail="Shopify-safe SEO copy is available in eight supported languages." />
+                <ServiceCard name="AI enrichment" configured={data.services.groq} detail="Fast cloud generation with automatic private-model fallback in eight languages." />
                 <article className="panel settings-card shopify-setting-card">
                   <span className="setting-service-icon"><ShoppingBag size={18} /></span>
                   <span className="kicker">WORKSPACE INTEGRATION</span>
@@ -1542,5 +1542,5 @@ function SourceCard({ source, onRun, onEdit, onDelete }: { source: SavedSource; 
 }
 
 function ServiceCard({ name, configured, detail }: { name: string; configured: boolean; detail: string }) {
-  return <article className="panel settings-card"><span className="setting-service-icon">{name.includes("Groq") ? <Sparkles size={18} /> : <Boxes size={18} />}</span><span className="kicker">PRODUCTION SERVICE</span><h2>{name}</h2><p>{detail}</p><div className="setting-row"><span><i className={configured ? "" : "offline"} />{configured ? "Operational" : "Not configured"}</span></div></article>;
+  return <article className="panel settings-card"><span className="setting-service-icon">{name.includes("AI") ? <Sparkles size={18} /> : <Boxes size={18} />}</span><span className="kicker">PRODUCTION SERVICE</span><h2>{name}</h2><p>{detail}</p><div className="setting-row"><span><i className={configured ? "" : "offline"} />{configured ? "Operational" : "Not configured"}</span></div></article>;
 }
