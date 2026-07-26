@@ -3,6 +3,28 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { authClient } from "@/app/lib/auth-client";
+import {
+  Bell,
+  Boxes,
+  Check,
+  ChevronDown,
+  Download,
+  FileOutput,
+  Globe2,
+  LayoutDashboard,
+  Maximize2,
+  MoreHorizontal,
+  Package,
+  PencilLine,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings,
+  ShoppingBag,
+  Sparkles,
+  Timer,
+  X,
+} from "lucide-react";
 
 type Product = {
   id: string;
@@ -36,6 +58,7 @@ type Job = {
   products_found: number;
   warning_count: number;
   error: string | null;
+  logs: Array<{ at: string; level: string; message: string }>;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -103,12 +126,12 @@ const emptyData: DashboardData = {
 };
 
 const nav = [
-  ["Overview", "01"],
-  ["Products", "02"],
-  ["AI Studio", "03"],
-  ["Exports", "04"],
-  ["Sources", "05"],
-  ["Settings", "06"],
+  ["Overview", LayoutDashboard],
+  ["Products", Package],
+  ["AI Studio", Sparkles],
+  ["Exports", FileOutput],
+  ["Sources", Globe2],
+  ["Settings", Settings],
 ] as const;
 
 const languages = [
@@ -146,6 +169,10 @@ export default function Home() {
   const [showSource, setShowSource] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showShopify, setShowShopify] = useState(false);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [showLiveTracker, setShowLiveTracker] = useState(false);
+  const [showTrackerDock, setShowTrackerDock] = useState(true);
+  const [trackedJobId, setTrackedJobId] = useState("");
   const [savedSources, setSavedSources] = useState<SavedSource[]>([]);
   const [account, setAccount] = useState<AccountData | null>(null);
   const [shopifyConnection, setShopifyConnection] = useState<ShopifyConnection>({
@@ -157,6 +184,12 @@ export default function Home() {
   const [seoLanguage, setSeoLanguage] = useState("tr");
   const [selectedSourceId, setSelectedSourceId] = useState("");
   const [busyAction, setBusyAction] = useState("");
+  const [aiProgress, setAiProgress] = useState<{
+    completed: number;
+    total: number;
+    failed: number;
+    current: string;
+  } | null>(null);
 
   const loadData = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -206,7 +239,9 @@ export default function Home() {
 
   const visibleProducts = data.products;
   const activeJob = data.jobs.find((job) => job.status === "running" || job.status === "queued");
+  const trackedJob = (trackedJobId ? data.jobs.find((job) => job.id === trackedJobId) : undefined) ?? activeJob;
   const lastJob = activeJob ?? data.jobs[0];
+  const latestTrackedLog = trackedJob?.logs?.[trackedJob.logs.length - 1];
   const aiCoverage = data.summary.total_products
     ? Math.round((data.summary.ai_enriched / data.summary.total_products) * 100)
     : 0;
@@ -232,6 +267,9 @@ export default function Home() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "Could not queue scrape");
+      setTrackedJobId(payload.id);
+      setShowTrackerDock(true);
+      setShowLiveTracker(true);
       setShowNewJob(false);
       notify("Real scrape job queued");
       await loadData(true);
@@ -262,9 +300,12 @@ export default function Home() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "Could not save source");
+      setSelectedSourceId(payload.source.id);
+      setSeoLanguage(payload.source.seo_language);
       setShowSource(false);
-      notify("Source saved to this workspace");
+      notify("Source saved. You can run it now.");
       await loadData(true);
+      setShowNewJob(true);
     } catch (sourceError) {
       notify(sourceError instanceof Error ? sourceError.message : "Could not save source");
     } finally {
@@ -292,22 +333,90 @@ export default function Home() {
   const runAi = async () => {
     if (!selected.length) return notify("Select at least one real product first");
     setBusyAction("ai");
+    const targets = [...selected];
+    let completed = 0;
+    let failed = 0;
+    setAiProgress({ completed: 0, total: targets.length, failed: 0, current: "Preparing enrichment" });
     try {
-      const response = await fetch("/api/ai/enrich", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ product_ids: selected, language: seoLanguage }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "AI enrichment failed");
+      for (const productId of targets) {
+        const product = data.products.find((item) => item.id === productId);
+        setAiProgress({
+          completed: completed + failed,
+          total: targets.length,
+          failed,
+          current: product?.title || "Selected product",
+        });
+        const response = await fetch("/api/ai/enrich", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ product_ids: [productId], language: seoLanguage }),
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.failed?.length) failed += 1;
+        else completed += 1;
+        setAiProgress({
+          completed: completed + failed,
+          total: targets.length,
+          failed,
+          current: product?.title || "Selected product",
+        });
+      }
       const label = languages.find(([code]) => code === seoLanguage)?.[1] ?? "selected language";
-      notify(`${payload.enriched} products enriched in ${label}`);
+      notify(`${completed} products enriched in ${label}${failed ? ` · ${failed} need attention` : ""}`);
       await loadData(true);
     } catch (aiError) {
       notify(aiError instanceof Error ? aiError.message : "AI enrichment failed");
     } finally {
       setBusyAction("");
+      window.setTimeout(() => setAiProgress(null), 5000);
     }
+  };
+
+  const bulkEdit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selected.length) return notify("Select products to edit first");
+    setBusyAction("bulk");
+    const form = new FormData(event.currentTarget);
+    const payload: Record<string, unknown> = { product_ids: selected };
+    const vendor = String(form.get("vendor") || "").trim();
+    const category = String(form.get("category") || "").trim();
+    const inventory = String(form.get("inventory_qty") || "").trim();
+    const tags = String(form.get("tags") || "").trim();
+    const published = String(form.get("published") || "");
+    if (vendor) payload.vendor = vendor;
+    if (category) payload.category = category;
+    if (inventory) payload.inventory_qty = Number(inventory);
+    if (tags) payload.tags = tags.split(",").map((tag) => tag.trim()).filter(Boolean);
+    if (published) payload.published = published === "true";
+    try {
+      const response = await fetch("/api/products/bulk", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Bulk edit failed");
+      setShowBulkEdit(false);
+      notify(`${result.updated} products updated`);
+      await loadData(true);
+    } catch (bulkError) {
+      notify(bulkError instanceof Error ? bulkError.message : "Bulk edit failed");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const openRunModal = () => {
+    const firstSource = savedSources.find((source) => source.enabled);
+    if (!firstSource) {
+      setShowSource(true);
+      return;
+    }
+    if (!selectedSourceId) {
+      setSelectedSourceId(firstSource.id);
+      setSeoLanguage(firstSource.seo_language);
+    }
+    setShowNewJob(true);
   };
 
   const syncShopify = async () => {
@@ -437,30 +546,19 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark"><i /><i /><i /></div><span>SCRAPPIFY</span></div>
         <div className="workspace-label">WORKSPACE</div>
-        <div className="workspace-switch">
+        <button className="workspace-switch" onClick={() => setShowWorkspace(true)}>
           <span className="store-avatar">{account?.workspace.name.slice(0, 2).toUpperCase() || "WS"}</span>
-          <label>
+          <span className="workspace-copy">
             <strong>{account?.organization.name || "Your organization"}</strong>
-            <select
-              aria-label="Current workspace"
-              value={account?.workspace.id || ""}
-              disabled={!account || busyAction === "workspace"}
-              onChange={(event) => void switchWorkspace(event.target.value)}
-            >
-              {account?.workspaces.map((workspace) => (
-                <option value={workspace.id} key={workspace.id}>
-                  {workspace.organization_name} / {workspace.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <span className={`live-dot ${data.services.database ? "" : "offline"}`} />
-        </div>
+            <small>{account?.workspace.name || "Main workspace"}</small>
+          </span>
+          <ChevronDown size={15} />
+        </button>
         <nav>
           <p>OPERATE</p>
-          {nav.map(([item, count], index) => (
+          {nav.map(([item, Icon], index) => (
             <button key={item} className={active === item ? "active" : ""} onClick={() => setActive(item)}>
-              <span className="nav-icon">{count}</span>{item}
+              <Icon className="nav-icon" size={17} strokeWidth={1.8} />{item}
               {item === "Products" && <em>{data.summary.total_products.toLocaleString()}</em>}
               {index === 4 && activeJob && <span className="live-dot" />}
             </button>
@@ -481,8 +579,9 @@ export default function Home() {
         <header className="topbar">
           <div className="crumb"><span>{account?.workspace.name || "Workspace"}</span><b>/</b><strong>{active}</strong></div>
           <div className="top-actions">
-            <button className="secondary-button" onClick={() => void loadData()}>↻ Refresh</button>
-            <button className="primary-button" onClick={() => setShowNewJob(true)}><span>＋</span> New scrape</button>
+            <button className="icon-button" aria-label="Notifications"><Bell size={16} /><i /></button>
+            <button className="secondary-button" onClick={() => void loadData()}><RefreshCw size={15} /> Refresh</button>
+            <button className="primary-button" onClick={openRunModal}><Plus size={15} />{savedSources.length ? "Run source" : "Add first source"}</button>
           </div>
         </header>
 
@@ -490,8 +589,8 @@ export default function Home() {
           <div className="page-heading">
             <div>
               <div className="eyebrow">LIVE COMMERCE OPERATIONS</div>
-              <h1>{active}</h1>
-              <p>Every number and product below belongs to the current workspace.</p>
+              <h1>{active === "Overview" ? `Welcome back, ${account?.user.name?.split(" ")[0] || "there"}.` : active}</h1>
+              <p>{active === "Overview" ? "Here is what is happening across your catalog today." : "Everything here belongs to the current workspace."}</p>
             </div>
             <div className={`health-chip ${error ? "health-error" : ""}`}><i />{error || "Live data connected"}</div>
           </div>
@@ -500,6 +599,24 @@ export default function Home() {
             <div className="loading-state"><span className="spinner dark" /><p>Loading workspace data…</p></div>
           ) : active === "Overview" ? (
             <>
+              <section className={`onboarding-strip ${savedSources.length ? "complete" : ""}`}>
+                <div className="onboarding-icon">{savedSources.length ? <Check size={20} /> : <Globe2 size={20} />}</div>
+                <div className="onboarding-copy">
+                  <span className="kicker">{savedSources.length ? "SOURCE READY" : "START HERE · STEP 1 OF 4"}</span>
+                  <h2>{savedSources.length ? `${savedSources[0].name} is ready to run.` : "Add your first product source."}</h2>
+                  <p>{savedSources.length ? "Run it now or open Sources to manage collection settings." : "Paste an approved collection URL and choose its default SEO language. Scrappify handles the rest."}</p>
+                </div>
+                <button className="primary-button" onClick={savedSources.length ? openRunModal : () => setShowSource(true)}>
+                  {savedSources.length ? <><RefreshCw size={15} /> Run source</> : <><Plus size={15} /> Add source</>}
+                </button>
+                <div className="onboarding-steps" aria-label="Catalog workflow">
+                  {["Source", "Collect", "Refine", "Publish"].map((step, index) => (
+                    <span className={index === 0 && savedSources.length ? "done" : index === 0 ? "active" : ""} key={step}>
+                      <i>{index === 0 && savedSources.length ? <Check size={11} /> : index + 1}</i>{step}
+                    </span>
+                  ))}
+                </div>
+              </section>
               <section className="metrics-grid">
                 <Metric label="CATALOG VALUE" value={formatTry(data.summary.catalog_value)} detail="Live price × inventory value" />
                 <Metric label="PRODUCTS" value={data.summary.total_products.toLocaleString()} detail={`${data.summary.warnings} price warnings`} />
@@ -541,7 +658,7 @@ export default function Home() {
                 </article>
               </section>
 
-              <ProductTable products={visibleProducts.slice(0, 8)} selected={selected} setSelected={setSelected} openProduct={setDrawer} runAi={runAi} syncShopify={syncShopify} shopifyReady={data.services.shopify} downloadCsv={downloadCsv} busyAction={busyAction} />
+              <ProductTable products={visibleProducts.slice(0, 8)} selected={selected} setSelected={setSelected} openProduct={setDrawer} openBulkEdit={() => setShowBulkEdit(true)} runAi={runAi} syncShopify={syncShopify} shopifyReady={data.services.shopify} downloadCsv={downloadCsv} busyAction={busyAction} />
             </>
           ) : active === "Products" ? (
             <ProductWorkspace
@@ -554,12 +671,13 @@ export default function Home() {
               sourceFilter={sourceFilter}
               setSourceFilter={setSourceFilter}
               openProduct={setDrawer}
+              openBulkEdit={() => setShowBulkEdit(true)}
               runAi={runAi}
               syncShopify={syncShopify}
               shopifyReady={data.services.shopify}
               downloadCsv={downloadCsv}
               busyAction={busyAction}
-              onNewJob={() => setShowNewJob(true)}
+              onNewJob={openRunModal}
             />
           ) : active === "AI Studio" ? (
             <section className="studio-layout">
@@ -568,6 +686,13 @@ export default function Home() {
                 <h2>Enrich only products you select.</h2>
                 <p>The model receives the real title, brand, category and price. It cannot see or invent unavailable product details.</p>
                 <div className="real-selection"><span>{selected.length}</span><p>products selected from this workspace</p></div>
+                {aiProgress && (
+                  <div className="ai-live-progress">
+                    <div><span><Sparkles size={15} /> AI enrichment in progress</span><strong>{aiProgress.completed}/{aiProgress.total}</strong></div>
+                    <div className="progress-track"><i style={{ width: `${Math.round((aiProgress.completed / aiProgress.total) * 100)}%` }} /></div>
+                    <p>{busyAction === "ai" ? `Writing: ${aiProgress.current}` : "Enrichment complete"}{aiProgress.failed ? ` · ${aiProgress.failed} failed` : ""}</p>
+                  </div>
+                )}
                 <label className="language-picker">SEO description language
                   <select value={seoLanguage} onChange={(event) => setSeoLanguage(event.target.value)}>
                     {languages.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
@@ -575,7 +700,7 @@ export default function Home() {
                 </label>
                 <div className="studio-options"><label><input type="checkbox" checked readOnly /> Shopify-safe HTML</label><label><input type="checkbox" checked readOnly /> Source-name removal</label><label><input type="checkbox" checked readOnly /> Safe tag suggestions</label><label><input type="checkbox" checked readOnly /> Factual-only prompt</label></div>
                 <button className="primary-button wide" disabled={!selected.length || busyAction === "ai" || !data.services.groq} onClick={() => void runAi()}>
-                  {busyAction === "ai" ? "Enriching selected products…" : `✦ Enrich ${selected.length} in ${languages.find(([code]) => code === seoLanguage)?.[1]}`}
+                  {busyAction === "ai" ? <><span className="spinner" /> Enriching {aiProgress?.completed || 0} of {aiProgress?.total || selected.length}</> : <><Sparkles size={15} /> Enrich {selected.length} in {languages.find(([code]) => code === seoLanguage)?.[1]}</>}
                 </button>
               </article>
               <article className="panel live-queue-panel">
@@ -644,6 +769,62 @@ export default function Home() {
           )}
         </div>
       </section>
+
+      {trackedJob && showTrackerDock && (
+        <aside className={`live-tracker-dock ${trackedJob.status}`}>
+          <button className="tracker-main" onClick={() => setShowLiveTracker(true)}>
+            <span className="tracker-pulse"><Timer size={17} /></span>
+            <span className="tracker-copy">
+              <span><strong>{trackedJob.status === "queued" ? "Waiting for worker" : trackedJob.status === "running" ? "Collecting live products" : trackedJob.status === "completed" ? "Collection complete" : "Collection stopped"}</strong><b>{trackedJob.progress}%</b></span>
+              <span className="tracker-bar"><i style={{ width: `${trackedJob.progress}%` }} /></span>
+              <small>{latestTrackedLog?.message || `${trackedJob.category_name} · ${trackedJob.source}`}</small>
+            </span>
+          </button>
+          <button className="tracker-expand" aria-label="Open live scrape tracker" onClick={() => setShowLiveTracker(true)}><Maximize2 size={16} /></button>
+          <button className="tracker-close" aria-label="Hide live scrape tracker" onClick={() => setShowTrackerDock(false)}><X size={15} /></button>
+        </aside>
+      )}
+
+      {trackedJob && showLiveTracker && (
+        <div className="drawer-backdrop centered tracker-backdrop" onClick={() => setShowLiveTracker(false)}>
+          <section className="live-tracker-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="drawer-close" aria-label="Minimize live tracker" onClick={() => setShowLiveTracker(false)}><X size={18} /></button>
+            <div className="tracker-modal-head">
+              <span className={`tracker-status-icon ${trackedJob.status}`}><Timer size={21} /></span>
+              <div><span className="kicker">LIVE COLLECTION TRACKER</span><h2>{trackedJob.category_name}</h2><p>{trackedJob.source} · Started {formatDate(trackedJob.started_at || trackedJob.created_at)}</p></div>
+              <span className={`status-badge ${trackedJob.status}`}>{trackedJob.status}</span>
+            </div>
+            <div className="tracker-progress-hero">
+              <div><strong>{trackedJob.progress}%</strong><span>{trackedJob.status === "queued" ? "Waiting for an available worker" : trackedJob.status === "running" ? "Your worker is collecting products now" : trackedJob.status === "completed" ? "Collection completed successfully" : "Collection is no longer running"}</span></div>
+              <div className="progress-track"><i style={{ width: `${trackedJob.progress}%` }} /></div>
+            </div>
+            <div className="tracker-metrics">
+              <span><small>PRODUCTS FOUND</small><strong>{trackedJob.products_found}</strong></span>
+              <span><small>PAGES COMPLETE</small><strong>{trackedJob.pages_completed}<i> / {trackedJob.max_pages}</i></strong></span>
+              <span><small>WARNINGS</small><strong>{trackedJob.warning_count}</strong></span>
+              <span><small>ELAPSED</small><strong>{trackedJob.completed_at ? "Done" : "Live"}</strong></span>
+            </div>
+            <div className="tracker-activity">
+              <div className="tracker-activity-head"><span>Worker activity</span><i>{trackedJob.status === "running" ? "Updating automatically" : "Final activity"}</i></div>
+              <div className="tracker-log-list">
+                {(trackedJob.logs || []).slice(-8).reverse().map((log, index) => (
+                  <div className={log.level} key={`${log.at}-${index}`}>
+                    <i />
+                    <span><strong>{log.message}</strong><small>{formatDate(log.at)}</small></span>
+                  </div>
+                ))}
+                {!trackedJob.logs?.length && <div className="empty-log"><span className="spinner dark" /> Waiting for the first worker update…</div>}
+              </div>
+            </div>
+            <div className="tracker-source-url"><Globe2 size={15} /><span><small>SOURCE URL</small><strong>{trackedJob.category_url}</strong></span></div>
+            <div className="tracker-modal-actions">
+              {(trackedJob.status === "queued" || trackedJob.status === "running") && <button className="danger-button" onClick={() => void cancelJob(trackedJob.id)}>Cancel collection</button>}
+              <button className="secondary-button" onClick={() => setShowLiveTracker(false)}>Minimize tracker</button>
+              {trackedJob.status === "completed" && <button className="primary-button" onClick={() => { setShowLiveTracker(false); setActive("Products"); }}>Review products</button>}
+            </div>
+          </section>
+        </div>
+      )}
 
       {showNewJob && (
         <div className="drawer-backdrop centered" onClick={() => setShowNewJob(false)}>
@@ -723,6 +904,32 @@ export default function Home() {
         </div>
       )}
 
+      {showBulkEdit && (
+        <div className="drawer-backdrop centered" onClick={() => setShowBulkEdit(false)}>
+          <form className="job-modal bulk-modal" onSubmit={bulkEdit} onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="drawer-close" aria-label="Close bulk editor" onClick={() => setShowBulkEdit(false)}><X size={18} /></button>
+            <span className="kicker">BULK EDIT · {selected.length} PRODUCTS</span>
+            <h2>Update selected products</h2>
+            <p>Only fields you complete below will be changed. Existing values in every other field stay untouched.</p>
+            <div className="bulk-form-grid">
+              <label>Vendor<input name="vendor" placeholder="Leave unchanged" /></label>
+              <label>Category<input name="category" placeholder="Leave unchanged" /></label>
+              <label>Inventory quantity<input name="inventory_qty" type="number" min="0" placeholder="Leave unchanged" /></label>
+              <label>Publishing status
+                <select name="published" defaultValue="">
+                  <option value="">Leave unchanged</option>
+                  <option value="true">Include in export</option>
+                  <option value="false">Keep as draft</option>
+                </select>
+              </label>
+              <label className="full">Replace tags<input name="tags" placeholder="premium, fragrance, unisex" /></label>
+            </div>
+            <div className="bulk-summary"><Boxes size={18} /><span><strong>{selected.length} products</strong><small>Updates remain inside {account?.workspace.name || "this workspace"}</small></span></div>
+            <button className="primary-button wide" disabled={busyAction === "bulk"}>{busyAction === "bulk" ? "Updating products…" : `Apply to ${selected.length} products`}</button>
+          </form>
+        </div>
+      )}
+
       {drawer && (
         <div className="drawer-backdrop" onClick={() => setDrawer(null)}>
           <form className="product-drawer" onSubmit={saveProduct} onClick={(event) => event.stopPropagation()}>
@@ -742,6 +949,16 @@ export default function Home() {
             <button className="primary-button wide" disabled={busyAction === "save"}>{busyAction === "save" ? "Saving…" : "Save product"}</button>
           </form>
         </div>
+      )}
+      {aiProgress && (
+        <aside className={`ai-progress-dock ${busyAction === "ai" ? "running" : "complete"}`}>
+          <span className="ai-dock-icon">{busyAction === "ai" ? <Sparkles size={18} /> : <Check size={18} />}</span>
+          <div>
+            <span><strong>{busyAction === "ai" ? "Enriching products" : "Enrichment complete"}</strong><b>{aiProgress.completed}/{aiProgress.total}</b></span>
+            <div className="progress-track"><i style={{ width: `${Math.round((aiProgress.completed / aiProgress.total) * 100)}%` }} /></div>
+            <small>{busyAction === "ai" ? aiProgress.current : aiProgress.failed ? `${aiProgress.failed} products need attention` : "All selected products are ready"}</small>
+          </div>
+        </aside>
       )}
       {toast && <div className="toast"><i />{toast}</div>}
     </main>
@@ -763,6 +980,7 @@ type TableProps = {
   selected: string[];
   setSelected: React.Dispatch<React.SetStateAction<string[]>>;
   openProduct: (product: Product) => void;
+  openBulkEdit: () => void;
   runAi: () => void;
   syncShopify: () => void;
   shopifyReady: boolean;
@@ -770,13 +988,19 @@ type TableProps = {
   busyAction: string;
 };
 
-function ProductTable({ products, selected, setSelected, openProduct, runAi, syncShopify, shopifyReady, downloadCsv, busyAction }: TableProps) {
+function ProductTable({ products, selected, setSelected, openProduct, openBulkEdit, runAi, syncShopify, shopifyReady, downloadCsv, busyAction }: TableProps) {
   const toggle = (id: string) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   return (
     <section className="panel products-panel">
       <div className="panel-heading product-heading">
         <div><span className="kicker">LIVE CATALOG</span><h2>Products</h2></div>
-        <div className="table-actions">{selected.length > 0 && <span className="selected-pill">{selected.length} selected</span>}<button disabled={!selected.length || busyAction === "ai"} onClick={runAi}>✦ Enrich with AI</button><button disabled={!selected.length || !shopifyReady || busyAction === "shopify"} onClick={syncShopify}>Shopify sync</button><button className="export-button" onClick={downloadCsv}>↓ Export CSV</button></div>
+        <div className="table-actions">
+          {selected.length > 0 && <span className="selected-pill">{selected.length} selected</span>}
+          <button disabled={!selected.length || busyAction === "bulk"} onClick={openBulkEdit}><PencilLine size={14} /> Bulk edit</button>
+          <button disabled={!selected.length || busyAction === "ai"} onClick={runAi}><Sparkles size={14} /> Enrich</button>
+          <button disabled={!selected.length || !shopifyReady || busyAction === "shopify"} onClick={syncShopify}><ShoppingBag size={14} /> Shopify</button>
+          <button className="export-button" onClick={downloadCsv}><Download size={14} /> Export</button>
+        </div>
       </div>
       {products.length ? (
         <>
@@ -789,7 +1013,7 @@ function ProductTable({ products, selected, setSelected, openProduct, runAi, syn
               <td><span>{product.inventory_qty} units</span></td>
               <td><span className={`status-badge ${product.ai_status}`}>{product.ai_status === "enriched" ? "✦ " : ""}{product.ai_status}</span></td>
               <td><span className="shopify-state"><i />{product.shopify_status.replace("_", " ")}</span></td>
-              <td><button className="row-menu" onClick={() => openProduct(product)}>•••</button></td>
+              <td><button className="row-menu" aria-label={`Edit ${product.title}`} onClick={() => openProduct(product)}><MoreHorizontal size={17} /></button></td>
             </tr>)}
           </tbody></table></div>
           <div className="table-footer"><span>Showing {products.length} live products</span></div>
@@ -808,7 +1032,7 @@ function ProductWorkspace(props: TableProps & {
   onNewJob: () => void;
 }) {
   return <section className="product-workspace">
-    <div className="filters standalone"><label className="search"><span>⌕</span><input aria-label="Search live products" placeholder="Search real products…" value={props.query} onChange={(event) => props.setQuery(event.target.value)} /></label><select aria-label="Filter by real source" value={props.sourceFilter} onChange={(event) => props.setSourceFilter(event.target.value)}><option value="">All live sources</option>{props.sources.map((source) => <option key={source}>{source}</option>)}</select><button className="filter-button" onClick={props.onNewJob}>＋ Queue scrape</button></div>
+    <div className="filters standalone"><label className="search"><Search size={16} /><input aria-label="Search live products" placeholder="Search products…" value={props.query} onChange={(event) => props.setQuery(event.target.value)} /></label><select aria-label="Filter by real source" value={props.sourceFilter} onChange={(event) => props.setSourceFilter(event.target.value)}><option value="">All sources</option>{props.sources.map((source) => <option key={source}>{source}</option>)}</select><button className="filter-button" onClick={props.onNewJob}><Plus size={15} /> Run source</button></div>
     <ProductTable {...props} />
   </section>;
 }

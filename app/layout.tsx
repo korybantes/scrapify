@@ -9,19 +9,19 @@ export async function generateMetadata(): Promise<Metadata> {
   const origin = `${protocol}://${host}`;
 
   return {
-    title: "Scrappify — Commerce Operations for Shopify",
-    description: "Collect real product catalogs, enrich SEO copy in eight languages, review, and publish to Shopify.",
+    title: "Scrappify — From Source URL to Shopify-Ready Catalog",
+    description: "Collect real product data, refine it in bulk, generate multilingual SEO copy, and publish to Shopify from one professional workspace.",
     openGraph: {
-      title: "Scrappify — Commerce Operations for Shopify",
-      description: "From live source to multilingual Shopify catalog.",
+      title: "Scrappify — From Source URL to Shopify-Ready Catalog",
+      description: "Collect, refine, enrich, and publish your product catalog.",
       type: "website",
-      images: [{ url: `${origin}/og-v3.png`, width: 1536, height: 1024, alt: "Scrappify real catalog operations pipeline" }],
+      images: [{ url: `${origin}/og.png`, width: 1672, height: 941, alt: "Scrappify source-to-Shopify catalog workflow" }],
     },
     twitter: {
       card: "summary_large_image",
-      title: "Scrappify — Commerce Operations for Shopify",
-      description: "From live source to multilingual Shopify catalog.",
-      images: [`${origin}/og-v3.png`],
+      title: "Scrappify — From Source URL to Shopify-Ready Catalog",
+      description: "Collect, refine, enrich, and publish your product catalog.",
+      images: [`${origin}/og.png`],
     },
   };
 }

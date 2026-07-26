@@ -33,10 +33,10 @@ test("server-renders the public Scrappify landing page", async () => {
 
   const html = await response.text();
   assert.match(html, /SCRAPPIFY/);
-  assert.match(html, /Your product catalog/);
-  assert.match(html, /Create account/);
-  assert.match(html, /Organizations for your business/);
-  assert.match(html, /multilingual AI copy/);
+  assert.match(html, /Shopify-ready catalog/);
+  assert.match(html, /Create your workspace/);
+  assert.match(html, /One account/);
+  assert.match(html, /multilingual SEO copy/);
   assert.doesNotMatch(html, /Neon connected|No products in Neon|mock data/i);
 });
 

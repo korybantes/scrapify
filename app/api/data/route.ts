@@ -26,7 +26,7 @@ export async function GET(request: Request) {
       sql`
         SELECT id, source, category_name, category_url, start_page, max_pages,
           status, progress, pages_completed, products_found, warning_count,
-          error, created_at, started_at, completed_at
+          error, logs, created_at, started_at, completed_at
         FROM scrape_jobs
         WHERE workspace_id = ${workspaceId}::uuid
         ORDER BY created_at DESC LIMIT 20
