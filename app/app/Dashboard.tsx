@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- product image hosts are dynamic workspace source data */
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { authClient } from "@/app/lib/auth-client";
 import {
   Activity,
@@ -124,6 +124,26 @@ type DashboardData = {
   account?: Omit<AccountData, "workspaces">;
 };
 
+type AiProcessLog = {
+  id: string;
+  title: string;
+  status: "running" | "retrying" | "enriched" | "failed";
+  message: string;
+  at: string;
+};
+
+type AiProgress = {
+  status: "running" | "completed" | "completed_with_errors" | "cancelled";
+  completed: number;
+  succeeded: number;
+  total: number;
+  failed: number;
+  current: string;
+  attempt: number;
+  startedAt: number;
+  logs: AiProcessLog[];
+};
+
 const emptyData: DashboardData = {
   summary: { total_products: 0, ai_enriched: 0, ai_pending: 0, ai_failed: 0, ai_skipped: 0, warnings: 0, shopify_synced: 0, catalog_value: "0" },
   jobs: [],
@@ -199,12 +219,10 @@ export default function Home() {
   const [seoLanguage, setSeoLanguage] = useState("tr");
   const [selectedSourceId, setSelectedSourceId] = useState("");
   const [busyAction, setBusyAction] = useState("");
-  const [aiProgress, setAiProgress] = useState<{
-    completed: number;
-    total: number;
-    failed: number;
-    current: string;
-  } | null>(null);
+  const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
+  const [showAiTracker, setShowAiTracker] = useState(false);
+  const [showAiTrackerDock, setShowAiTrackerDock] = useState(true);
+  const aiCancelRequested = useRef(false);
 
   const loadData = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -266,6 +284,10 @@ export default function Home() {
   const aiCoverage = data.summary.total_products
     ? Math.round((data.summary.ai_enriched / data.summary.total_products) * 100)
     : 0;
+  const aiProgressPercent = aiProgress?.total
+    ? Math.round((aiProgress.completed / aiProgress.total) * 100)
+    : 0;
+  const aiRemaining = aiProgress ? Math.max(0, aiProgress.total - aiProgress.completed) : 0;
 
   const createJob = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -354,46 +376,164 @@ export default function Home() {
     await loadData(true);
   };
 
-  const runAi = async () => {
-    if (!selected.length) return notify("Select at least one real product first");
+  const processAiProducts = async (productIds: string[]) => {
+    if (!productIds.length) {
+      notify("There are no products waiting for AI");
+      return { succeeded: 0, failed: 0, cancelled: false };
+    }
+    if (!data.services.groq) {
+      notify("AI enrichment is not configured");
+      return { succeeded: 0, failed: productIds.length, cancelled: false };
+    }
+
     setBusyAction("ai");
-    const targets = [...selected];
-    let completed = 0;
+    setShowAiTrackerDock(true);
+    aiCancelRequested.current = false;
+    const targets = [...new Set(productIds)];
+    let succeeded = 0;
     let failed = 0;
-    setAiProgress({ completed: 0, total: targets.length, failed: 0, current: "Preparing enrichment" });
+    let logs: AiProcessLog[] = [];
+    const startedAt = Date.now();
+    const updateProgress = (
+      current: string,
+      attempt: number,
+      status: AiProgress["status"] = "running",
+    ) => {
+      setAiProgress({
+        status,
+        completed: succeeded + failed,
+        succeeded,
+        total: targets.length,
+        failed,
+        current,
+        attempt,
+        startedAt,
+        logs,
+      });
+    };
+    updateProgress("Preparing catalog enrichment", 0);
+
     try {
-      for (const productId of targets) {
+      for (let index = 0; index < targets.length; index += 1) {
+        if (aiCancelRequested.current) break;
+        const productId = targets[index];
         const product = data.products.find((item) => item.id === productId);
-        setAiProgress({
-          completed: completed + failed,
-          total: targets.length,
-          failed,
-          current: product?.title || "Selected product",
-        });
-        const response = await fetch("/api/ai/enrich", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ product_ids: [productId], language: seoLanguage }),
-        });
-        const payload = await response.json();
-        if (!response.ok || payload.failed?.length) failed += 1;
-        else completed += 1;
-        setAiProgress({
-          completed: completed + failed,
-          total: targets.length,
-          failed,
-          current: product?.title || "Selected product",
-        });
+        let productTitle = product?.title || `Product ${index + 1}`;
+        let enriched = false;
+        let finalError = "";
+
+        for (let attempt = 1; attempt <= 3 && !aiCancelRequested.current; attempt += 1) {
+          logs = [{
+            id: `${productId}-${attempt}-${Date.now()}`,
+            title: productTitle,
+            status: attempt === 1 ? "running" : "retrying",
+            message: attempt === 1 ? "Writing SEO description" : `Retry ${attempt} of 3`,
+            at: new Date().toISOString(),
+          }, ...logs].slice(0, 60);
+          updateProgress(productTitle, attempt);
+
+          try {
+            const response = await fetch("/api/ai/enrich", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ product_ids: [productId], language: seoLanguage }),
+            });
+            const payload = await response.json();
+            productTitle = payload.products?.[0]?.title || productTitle;
+            if (!response.ok || payload.failed?.length) {
+              throw new Error(payload.error || payload.failed?.[0]?.error || "AI enrichment failed");
+            }
+            enriched = true;
+            succeeded += 1;
+            logs = [{
+              id: `${productId}-success-${Date.now()}`,
+              title: productTitle,
+              status: "enriched",
+              message: `Description completed in ${languages.find(([code]) => code === seoLanguage)?.[1] || "the selected language"}`,
+              at: new Date().toISOString(),
+            }, ...logs].slice(0, 60);
+            break;
+          } catch (aiError) {
+            finalError = aiError instanceof Error ? aiError.message : "AI enrichment failed";
+            if (attempt < 3 && !aiCancelRequested.current) {
+              await new Promise((resolve) => window.setTimeout(resolve, attempt * 1200));
+            }
+          }
+        }
+
+        if (!enriched && !aiCancelRequested.current) {
+          failed += 1;
+          logs = [{
+            id: `${productId}-failed-${Date.now()}`,
+            title: productTitle,
+            status: "failed",
+            message: finalError || "Could not complete after 3 attempts",
+            at: new Date().toISOString(),
+          }, ...logs].slice(0, 60);
+        }
+        updateProgress(productTitle, 0);
       }
+
       const label = languages.find(([code]) => code === seoLanguage)?.[1] ?? "selected language";
-      notify(`${completed} products enriched in ${label}${failed ? ` · ${failed} need attention` : ""}`);
+      const cancelled = aiCancelRequested.current;
+      updateProgress(
+        cancelled ? "Stopped safely" : failed ? "Catalog run finished with items to retry" : "Every product is enriched",
+        0,
+        cancelled ? "cancelled" : failed ? "completed_with_errors" : "completed",
+      );
+      notify(cancelled
+        ? `AI run stopped · ${succeeded} products enriched`
+        : `${succeeded} products enriched in ${label}${failed ? ` · ${failed} need attention` : ""}`);
       await loadData(true);
+      return { succeeded, failed, cancelled };
     } catch (aiError) {
       notify(aiError instanceof Error ? aiError.message : "AI enrichment failed");
+      updateProgress("The enrichment run stopped unexpectedly", 0, "completed_with_errors");
+      return { succeeded, failed: Math.max(failed, targets.length - succeeded), cancelled: false };
     } finally {
       setBusyAction("");
-      window.setTimeout(() => setAiProgress(null), 5000);
     }
+  };
+
+  const runAi = async () => {
+    if (!selected.length) return notify("Select at least one real product first");
+    await processAiProducts(selected);
+  };
+
+  const enrichAllRemaining = async () => {
+    if (busyAction === "ai") return;
+    setBusyAction("select");
+    try {
+      const [pendingResponse, failedResponse] = await Promise.all([
+        fetch("/api/products/ids?ai_status=pending", { cache: "no-store" }),
+        fetch("/api/products/ids?ai_status=failed", { cache: "no-store" }),
+      ]);
+      const [pendingPayload, failedPayload] = await Promise.all([pendingResponse.json(), failedResponse.json()]);
+      if (!pendingResponse.ok || !failedResponse.ok) {
+        throw new Error(pendingPayload.error || failedPayload.error || "Could not prepare the AI queue");
+      }
+      const productIds = [...new Set<string>([...pendingPayload.ids, ...failedPayload.ids])];
+      setSelected(productIds);
+      if (!productIds.length) {
+        notify("Every product is already enriched");
+        return;
+      }
+      await processAiProducts(productIds);
+    } catch (selectionError) {
+      notify(selectionError instanceof Error ? selectionError.message : "Could not prepare the AI queue");
+    } finally {
+      setBusyAction((current) => current === "select" ? "" : current);
+    }
+  };
+
+  const writeDrawerWithAi = async () => {
+    if (!drawer || busyAction === "ai") return;
+    const productId = drawer.id;
+    const result = await processAiProducts([productId]);
+    if (!result.succeeded) return;
+    const response = await fetch(`/api/products/${productId}`, { cache: "no-store" });
+    const payload = await response.json();
+    if (response.ok) setDrawer(payload);
   };
 
   const bulkEdit = async (event: FormEvent<HTMLFormElement>) => {
@@ -831,7 +971,7 @@ export default function Home() {
                   <p>Filter the complete catalog by enrichment status, select a page or every matching product, then watch each description complete live.</p>
                 </div>
                 <div className="ai-hero-actions">
-                  <button className="secondary-button" disabled={!data.summary.ai_pending || busyAction === "select"} onClick={() => void selectAllMatching("pending")}><CheckCircle2 size={14} /> Select all pending</button>
+                  <button className="secondary-button" disabled={busyAction === "select" || busyAction === "ai" || !data.services.groq} onClick={() => void enrichAllRemaining()}><Sparkles size={14} /> Enrich all remaining</button>
                   <button className="primary-button" disabled={!selected.length || busyAction === "ai" || !data.services.groq} onClick={() => void runAi()}><Sparkles size={14} /> Enrich {selected.length || "selected"}</button>
                 </div>
               </div>
@@ -860,9 +1000,10 @@ export default function Home() {
                   <div className="ai-selection-summary"><strong>{selected.length}</strong><span><b>products selected</b><small>{selected.length ? "Ready for enrichment" : "Choose products from the queue"}</small></span></div>
                   {aiProgress && (
                     <div className="ai-live-progress">
-                      <div><span><Sparkles size={15} /> {busyAction === "ai" ? "Enrichment in progress" : "Enrichment complete"}</span><strong>{aiProgress.completed}/{aiProgress.total}</strong></div>
-                      <div className="progress-track"><i style={{ width: `${Math.round((aiProgress.completed / aiProgress.total) * 100)}%` }} /></div>
-                      <p>{busyAction === "ai" ? `Writing: ${aiProgress.current}` : aiProgress.failed ? `${aiProgress.failed} products need attention` : "Every selected product is ready"}</p>
+                      <div><span><Sparkles size={15} /> {aiProgress.status === "running" ? "Enrichment in progress" : "Enrichment run complete"}</span><strong>{aiProgress.completed}/{aiProgress.total}</strong></div>
+                      <div className="progress-track"><i style={{ width: `${aiProgressPercent}%` }} /></div>
+                      <p>{aiProgress.status === "running" ? `Writing: ${aiProgress.current}` : aiProgress.failed ? `${aiProgress.failed} products need attention` : "Every selected product is ready"}</p>
+                      <button className="ai-view-tracker" onClick={() => setShowAiTracker(true)}>View detailed progress <Maximize2 size={12} /></button>
                     </div>
                   )}
                   <button className="primary-button wide" disabled={!selected.length || busyAction === "ai" || !data.services.groq} onClick={() => void runAi()}>
@@ -1170,8 +1311,8 @@ export default function Home() {
       {drawer && (
         <div className="drawer-backdrop" onClick={() => setDrawer(null)}>
           <form className="product-drawer" onSubmit={saveProduct} onClick={(event) => event.stopPropagation()}>
-            <button type="button" className="drawer-close" onClick={() => setDrawer(null)}>×</button>
-            <div className="drawer-product-art">{drawer.image_url ? <img src={drawer.image_url} alt="" /> : <span>{drawer.vendor.slice(0, 1) || "P"}</span>}</div>
+            <button type="button" className="drawer-close" aria-label="Close product editor" onClick={() => setDrawer(null)}><X size={18} /></button>
+            <div className="drawer-product-art"><SafeProductImage src={drawer.image_url} alt={drawer.title} fallback={drawer.vendor.slice(0, 1) || "P"} /></div>
             <span className="kicker">WORKSPACE PRODUCT</span><h2>{drawer.title}</h2><p>{drawer.source} · Updated {formatDate(drawer.updated_at)}</p>
             <div className="drawer-fields">
               <label className="full">Shopify title<input name="title" defaultValue={drawer.title} /></label>
@@ -1181,21 +1322,80 @@ export default function Home() {
               <label>Compare at<input name="compare_at_price" type="number" step=".01" defaultValue={drawer.compare_at_price ?? ""} /></label>
               <label>Inventory<input name="inventory_qty" type="number" min="0" defaultValue={drawer.inventory_qty} /></label>
               <label className="check-row"><input name="published" type="checkbox" defaultChecked={drawer.published} /> Publish in export</label>
-              <label className="full">SEO description<textarea name="body_html" defaultValue={drawer.body_html} /></label>
+              <label className="full drawer-description-field">
+                <span className="drawer-field-head">
+                  <span>SEO description</span>
+                  <span className="drawer-ai-controls">
+                    <select aria-label="AI description language" value={seoLanguage} onChange={(event) => setSeoLanguage(event.target.value)}>
+                      {languages.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+                    </select>
+                    <button type="button" disabled={busyAction === "ai" || !data.services.groq} onClick={() => void writeDrawerWithAi()}>
+                      {busyAction === "ai" ? <><span className="spinner dark" /> Writing</> : <><Sparkles size={13} /> Write with AI</>}
+                    </button>
+                  </span>
+                </span>
+                <textarea key={`${drawer.id}-${drawer.updated_at}`} name="body_html" defaultValue={drawer.body_html} />
+              </label>
             </div>
             <button className="primary-button wide" disabled={busyAction === "save"}>{busyAction === "save" ? "Saving…" : "Save product"}</button>
           </form>
         </div>
       )}
-      {aiProgress && (
-        <aside className={`ai-progress-dock ${busyAction === "ai" ? "running" : "complete"}`}>
-          <span className="ai-dock-icon">{busyAction === "ai" ? <Sparkles size={18} /> : <Check size={18} />}</span>
-          <div>
-            <span><strong>{busyAction === "ai" ? "Enriching products" : "Enrichment complete"}</strong><b>{aiProgress.completed}/{aiProgress.total}</b></span>
-            <div className="progress-track"><i style={{ width: `${Math.round((aiProgress.completed / aiProgress.total) * 100)}%` }} /></div>
-            <small>{busyAction === "ai" ? aiProgress.current : aiProgress.failed ? `${aiProgress.failed} products need attention` : "All selected products are ready"}</small>
-          </div>
+      {aiProgress && showAiTrackerDock && (
+        <aside className={`ai-progress-dock ${aiProgress.status}`}>
+          <button className="ai-tracker-main" onClick={() => setShowAiTracker(true)}>
+            <span className="ai-dock-icon">{aiProgress.status === "running" ? <Sparkles size={18} /> : aiProgress.failed ? <RefreshCw size={18} /> : <Check size={18} />}</span>
+            <span className="ai-dock-copy">
+              <span><strong>{aiProgress.status === "running" ? "Enriching products" : aiProgress.failed ? "Run finished with retries" : "Enrichment complete"}</strong><b>{aiProgressPercent}%</b></span>
+              <span className="tracker-bar"><i style={{ width: `${aiProgressPercent}%` }} /></span>
+              <small>{aiProgress.status === "running" ? aiProgress.current : aiProgress.failed ? `${aiProgress.failed} products need attention` : "Every queued product is ready"}</small>
+              <span className="tracker-mini-meta"><i>{aiProgress.succeeded} enriched</i><i>{aiRemaining} remaining</i><i>{aiProgress.failed} failed</i></span>
+            </span>
+          </button>
+          <button className="tracker-expand" aria-label="Open AI progress tracker" onClick={() => setShowAiTracker(true)}><Maximize2 size={16} /></button>
+          <button className="tracker-close" aria-label="Hide AI progress tracker" onClick={() => setShowAiTrackerDock(false)}><X size={15} /></button>
         </aside>
+      )}
+      {aiProgress && showAiTracker && (
+        <div className="drawer-backdrop centered tracker-backdrop" onClick={() => setShowAiTracker(false)}>
+          <section className="live-tracker-modal ai-tracker-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="drawer-close" aria-label="Minimize AI tracker" onClick={() => setShowAiTracker(false)}><X size={18} /></button>
+            <div className="tracker-modal-head">
+              <span className={`tracker-status-icon ai ${aiProgress.status}`}><Sparkles size={21} /></span>
+              <div><span className="kicker">LIVE AI ENRICHMENT</span><h2>{aiProgress.status === "running" ? "Your catalog is being written" : "Enrichment run summary"}</h2><p>Started {formatDate(new Date(aiProgress.startedAt).toISOString())} · Auto-retry enabled</p></div>
+              <span className={`status-badge ${aiProgress.status === "completed" ? "enriched" : aiProgress.status === "running" ? "running" : aiProgress.status === "cancelled" ? "cancelled" : "failed"}`}>{aiProgress.status.replaceAll("_", " ")}</span>
+            </div>
+            <div className="tracker-progress-hero ai">
+              <div><strong>{aiProgressPercent}%</strong><span>{aiProgress.status === "running" ? `Writing ${aiProgress.current}${aiProgress.attempt > 1 ? ` · attempt ${aiProgress.attempt} of 3` : ""}` : aiProgress.failed ? "Finished; failed items remain clearly marked for another run" : "Every queued product has a finished SEO description"}</span></div>
+              <div className="progress-track"><i style={{ width: `${aiProgressPercent}%` }} /></div>
+            </div>
+            <div className="tracker-metrics">
+              <span><small>TOTAL QUEUED</small><strong>{aiProgress.total}</strong></span>
+              <span><small>ENRICHED</small><strong>{aiProgress.succeeded}</strong></span>
+              <span><small>REMAINING</small><strong>{aiRemaining}</strong></span>
+              <span><small>FAILED</small><strong>{aiProgress.failed}</strong></span>
+            </div>
+            <div className="tracker-activity">
+              <div className="tracker-activity-head"><span>Enrichment activity</span><i>{aiProgress.status === "running" ? "Live updates · automatic retries" : "Final run history"}</i></div>
+              <div className="tracker-log-list ai-log-list">
+                {aiProgress.logs.map((log) => (
+                  <div className={log.status} key={log.id}>
+                    <i />
+                    <span><strong>{log.title}</strong><small>{log.message} · {formatDate(log.at)}</small></span>
+                    <em>{log.status}</em>
+                  </div>
+                ))}
+                {!aiProgress.logs.length && <div className="empty-log"><span className="spinner dark" /> Preparing the first product…</div>}
+              </div>
+            </div>
+            <div className="ai-tracker-assurance"><CheckCircle2 size={16} /><span><strong>Safe continuous processing</strong><small>Scrappify continues through the entire queue and automatically retries temporary AI failures up to three times.</small></span></div>
+            <div className="tracker-modal-actions">
+              {aiProgress.status === "running" && <button className="danger-button" onClick={() => { aiCancelRequested.current = true; notify("AI will stop safely after the current request"); }}>Stop after current product</button>}
+              <button className="secondary-button" onClick={() => setShowAiTracker(false)}>Minimize tracker</button>
+              {aiProgress.status !== "running" && <button className="primary-button" onClick={() => { setShowAiTracker(false); setShowAiTrackerDock(false); }}>Done</button>}
+            </div>
+          </section>
+        </div>
       )}
       {toast && <div className="toast"><i />{toast}</div>}
     </main>
@@ -1207,9 +1407,15 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 }
 
 function ProductThumb({ product }: { product: Product }) {
-  return product.image_url
-    ? <span className="product-thumb image"><img src={product.image_url} alt="" /></span>
-    : <span className="product-thumb">{product.vendor.slice(0, 1) || "P"}</span>;
+  return <span className="product-thumb image"><SafeProductImage src={product.image_url} alt={product.title} fallback={product.vendor.slice(0, 1) || "P"} /></span>;
+}
+
+function SafeProductImage({ src, alt, fallback }: { src: string; alt: string; fallback: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return <span className="product-image-fallback" aria-label={`${alt} image unavailable`}>{fallback}</span>;
+  }
+  return <img src={src} alt={alt} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
 }
 
 type TableProps = {

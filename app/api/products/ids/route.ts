@@ -18,7 +18,6 @@ export async function GET(request: Request) {
         AND (${source} = '' OR source = ${source})
         AND (${aiStatus} = '' OR ai_status = ${aiStatus})
       ORDER BY updated_at DESC
-      LIMIT 5000
     `;
     return Response.json({ ids: rows.map((row) => row.id), total: rows.length });
   } catch (error) {

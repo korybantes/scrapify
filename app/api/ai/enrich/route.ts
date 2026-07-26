@@ -96,7 +96,11 @@ export async function POST(request: Request) {
         `;
       }
     }
-    return Response.json({ enriched, failed });
+    return Response.json({
+      enriched,
+      failed,
+      products: products.map((product) => ({ id: String(product.id), title: String(product.title) })),
+    });
   } catch (error) {
     return jsonError(error);
   }

@@ -13,6 +13,25 @@ const editableFields = new Set([
   "inventory_qty",
 ]);
 
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
+  try {
+    const auth = await requireWorkspace(request);
+    if (!auth.context) return auth.response;
+    const { id } = await context.params;
+    const sql = db();
+    const rows = await sql`
+      SELECT *
+      FROM products
+      WHERE id = ${id}::uuid AND workspace_id = ${auth.context.workspace.id}::uuid
+      LIMIT 1
+    `;
+    if (!rows.length) return Response.json({ error: "Product not found" }, { status: 404 });
+    return Response.json(rows[0]);
+  } catch (error) {
+    return jsonError(error, 400);
+  }
+}
+
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requireWorkspace(request);

@@ -416,6 +416,52 @@ body { -webkit-font-smoothing: antialiased; }
 .ai-progress-dock ~ .live-tracker-dock { bottom: 125px; }
 @keyframes trackerPulse { 0% { transform: scale(.9); opacity: .9; } 80%,100% { transform: scale(1.18); opacity: 0; } }
 
+/* Product editor and durable AI process tracking */
+.product-drawer { width: min(590px,100%); padding: 30px 36px 38px; }
+.drawer-product-art { position: relative; height: 245px; margin: 7px 0 28px; padding: 18px; border: 1px solid #e4e7df; border-radius: 15px; background: radial-gradient(circle at 50% 38%,#fff 0,#f6f7f2 72%); }
+.drawer-product-art img { width: 100%; height: 100%; padding: 0; object-fit: contain; object-position: center; }
+.product-image-fallback { width: 100%; height: 100%; display: grid; place-items: center; color: #285141; border: 1px dashed #cbd4c8; border-radius: 10px; background: linear-gradient(145deg,#f7f9f2,#eaf0e4); font: 700 42px var(--font-geist-mono); }
+.product-thumb .product-image-fallback { border: 0; border-radius: 0; font-size: 13px; }
+.drawer-description-field { gap: 9px !important; }
+.drawer-field-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.drawer-ai-controls { display: flex; align-items: center; gap: 6px; }
+.drawer-ai-controls select { width: auto; min-width: 92px; height: 31px; padding: 0 27px 0 9px; border-radius: 7px; color: #445249; background-color: #f7f8f4; font-size: 8px; }
+.drawer-ai-controls button { height: 31px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #ded8f5; border-radius: 7px; color: #5849b6; background: #f4f1ff; font-size: 8px; font-weight: 750; white-space: nowrap; }
+.drawer-ai-controls button:hover { border-color: #bcb1ec; background: #ebe6ff; }
+.drawer-ai-controls button:disabled { opacity: .55; cursor: not-allowed; }
+.drawer-description-field textarea { min-height: 155px; line-height: 1.55; }
+.ai-view-tracker { width: 100%; margin-top: 10px; padding-top: 9px; display: flex; align-items: center; justify-content: space-between; border: 0; border-top: 1px solid #e1ddf1; color: #6658b7; background: transparent; font-size: 8px; font-weight: 700; }
+.ai-progress-dock { width: min(440px,calc(100vw - 32px)); min-height: 92px; padding: 0; display: grid; grid-template-columns: 1fr 40px 34px; align-items: stretch; overflow: hidden; }
+.ai-progress-dock.running .ai-dock-icon:after { content: ""; position: absolute; inset: -5px; border: 1px solid rgba(201,243,107,.45); border-radius: 13px; animation: trackerPulse 1.8s ease-out infinite; }
+.ai-progress-dock.completed_with_errors { border-color: #9c695c; }
+.ai-tracker-main { min-width: 0; padding: 13px 10px 13px 14px; display: flex; align-items: center; gap: 11px; border: 0; color: inherit; background: transparent; text-align: left; }
+.ai-dock-icon { position: relative; width: 40px; height: 40px; }
+.ai-dock-copy { min-width: 0; flex: 1; display: grid; gap: 7px; }
+.ai-dock-copy > span:first-child { display: flex; justify-content: space-between; gap: 12px; font-size: 9px; }
+.ai-dock-copy > span:first-child b { color: var(--lime); }
+.ai-dock-copy small { overflow: hidden; color: #a6bbb3; font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
+.ai-progress-dock .tracker-mini-meta { display: flex; gap: 12px; color: #a9bcb5; }
+.ai-progress-dock .tracker-mini-meta i { font-size: 7px; font-style: normal; }
+.ai-progress-dock .tracker-expand,.ai-progress-dock .tracker-close { border-color: rgba(255,255,255,.08); }
+.tracker-status-icon.ai { color: #5548ae; background: #e8e4ff; }
+.tracker-status-icon.ai.completed { color: #2e694e; background: #dff0bd; }
+.tracker-status-icon.ai.completed_with_errors { color: #9a493b; background: #f8dfd9; }
+.tracker-progress-hero.ai { background: linear-gradient(135deg,#f5f3ff,#eef6e8); }
+.tracker-progress-hero.ai .progress-track i { background: linear-gradient(90deg,#6b5bd4,#3b795b); }
+.ai-log-list > div { display: grid !important; grid-template-columns: 8px minmax(0,1fr) auto; }
+.ai-log-list > div > em { align-self: center; padding: 4px 6px; border-radius: 5px; color: #6557bc; background: #f0edff; font-size: 6px; font-style: normal; font-weight: 750; text-transform: uppercase; }
+.ai-log-list > div.enriched > i { background: #4c8d68; box-shadow: 0 0 0 2px #dcebe0; }
+.ai-log-list > div.enriched > em { color: #367054; background: #e7f3e9; }
+.ai-log-list > div.retrying > i { background: #d49a45; box-shadow: 0 0 0 2px #f5e7cf; }
+.ai-log-list > div.retrying > em { color: #9d6b26; background: #fbf0dc; }
+.ai-log-list > div.failed > i { background: #cf6452; box-shadow: 0 0 0 2px #f5ded9; }
+.ai-log-list > div.failed > em { color: #a44c3f; background: #fae8e4; }
+.ai-tracker-assurance { margin-top: 13px; padding: 12px 14px; display: flex; align-items: center; gap: 10px; color: #2a6149; border: 1px solid #dbe7d2; border-radius: 9px; background: #f2f7eb; }
+.ai-tracker-assurance > span { display: grid; gap: 3px; }
+.ai-tracker-assurance strong { font-size: 8px; }
+.ai-tracker-assurance small { color: #718077; font-size: 7px; }
+.ai-progress-dock ~ .live-tracker-dock { bottom: 138px; }
+
 @media (max-width: 1050px) {
   .landing .hero { min-height: auto; padding-top: 130px; grid-template-columns: 1fr; }
   .landing .hero-copy { max-width: 750px; }
@@ -434,6 +480,14 @@ body { -webkit-font-smoothing: antialiased; }
   .landing .hero h1 { font-size: clamp(44px,13vw,62px); letter-spacing: -3px; }
   .landing .hero-actions { align-items: stretch; }
   .landing .button { width: 100%; }
+  .product-drawer { padding: 24px 19px 32px; }
+  .drawer-product-art { height: 210px; padding: 13px; }
+  .drawer-fields { grid-template-columns: 1fr; }
+  .drawer-fields .full { grid-column: 1; }
+  .drawer-field-head { align-items: flex-start; flex-direction: column; }
+  .drawer-ai-controls { width: 100%; }
+  .drawer-ai-controls select,.drawer-ai-controls button { flex: 1; }
+  .ai-progress-dock { right: 16px; bottom: 16px; }
   .product-stage { width: 680px; transform: scale(.76); transform-origin: left top; margin-bottom: -115px; }
   .source-float { left: 12px; }.ai-float { right: 12px; }
   .landing-trust { padding: 30px 19px; display: grid; gap: 22px; }
