@@ -85,7 +85,7 @@ def _ollama_completion(settings, messages: list[dict]) -> str:
             last_error = exc
             if attempt < 4:
                 time.sleep(attempt * 2)
-    raise RuntimeError(f"Local AI is unavailable after 4 connection attempts: {last_error}")
+    raise RuntimeError(f"ScrapifyAI is unavailable after 4 connection attempts: {last_error}")
 
 
 def _generate(settings, messages: list[dict]) -> tuple[str, str]:

@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from uuid import UUID
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -44,11 +45,47 @@ def workspace_header(
 def health():
     with connection() as conn:
         database = conn.execute("SELECT 1 AS ok").fetchone()["ok"] == 1
+    local_ai = {
+        "status": "disabled",
+        "model": settings.ollama_model,
+        "reachable": False,
+        "model_installed": False,
+    }
+    if settings.ai_provider.lower() in {"ollama", "hybrid"}:
+        try:
+            response = httpx.get(
+                f"{settings.ollama_url.rstrip('/')}/api/tags",
+                timeout=5,
+            )
+            response.raise_for_status()
+            installed_models = [
+                model.get("name", "").split(":")[0]
+                for model in response.json().get("models", [])
+            ]
+            expected_model = settings.ollama_model.split(":")[0]
+            model_installed = expected_model in installed_models
+            local_ai = {
+                "status": "ready" if model_installed else "model_missing",
+                "model": settings.ollama_model,
+                "reachable": True,
+                "model_installed": model_installed,
+            }
+        except (httpx.HTTPError, ValueError) as exc:
+            local_ai = {
+                "status": "unreachable",
+                "model": settings.ollama_model,
+                "reachable": False,
+                "model_installed": False,
+                "error": str(exc),
+            }
+    ai_ready = bool(settings.groq_api_key or local_ai["status"] == "ready")
     return {
-        "status": "ok" if database else "degraded",
+        "status": "ok" if database and ai_ready else "degraded",
         "database": database,
-        "ai": bool(settings.groq_api_key or settings.ollama_url),
+        "ai": ai_ready,
         "ai_provider": settings.ai_provider,
+        "scrapify_ai": local_ai,
+        "groq_configured": bool(settings.groq_api_key),
         "shopify": bool(settings.shopify_store_domain and settings.shopify_access_token),
     }
 

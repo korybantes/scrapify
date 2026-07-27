@@ -66,7 +66,7 @@ async function enrichWithVps(productId: string, workspaceId: string, language: s
   const backendUrl = process.env.SCRAPPIFY_BACKEND_URL?.replace(/\/$/, "");
   const backendKey = process.env.SCRAPPIFY_API_KEY;
   if (!backendUrl || !backendKey) {
-    throw new Error("Local AI fallback is not configured");
+    throw new Error("ScrapifyAI fallback is not configured");
   }
   const response = await fetch(`${backendUrl}/v1/ai/enrich`, {
     method: "POST",
@@ -83,7 +83,7 @@ async function enrichWithVps(productId: string, workspaceId: string, language: s
   });
   const payload = await response.json();
   if (!response.ok || payload.failed?.length) {
-    throw new Error(payload.detail || payload.failed?.[0]?.error || `Local AI returned ${response.status}`);
+    throw new Error(payload.detail || payload.failed?.[0]?.error || `ScrapifyAI returned ${response.status}`);
   }
 }
 

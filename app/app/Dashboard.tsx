@@ -929,7 +929,7 @@ export default function Home() {
 
                 <article className="panel ai-panel">
                   <div className="ai-orb"><i /><i /><i /></div>
-                  <span className="kicker">HYBRID AI ENGINE</span>
+                  <span className="kicker">SCRAPIFYAI</span>
                   <h2>{data.services.groq ? "AI enrichment is ready." : "AI is not configured."}</h2>
                   <p>{data.services.groq ? "Generate factual Shopify copy in the language you choose for each run." : "Add the AI service secret to enable production enrichment."}</p>
                   <div className="ai-stats"><span><strong>{Math.max(0, data.summary.total_products - data.summary.ai_enriched)}</strong><small>Awaiting AI</small></span><span><strong>{data.summary.ai_enriched}</strong><small>Completed</small></span></div>
@@ -1103,7 +1103,7 @@ export default function Home() {
               <div className="settings-section-head"><div><span className="kicker">PRODUCTION SERVICES</span><h3>Connections & readiness</h3></div><p>Each workspace keeps its own Shopify connection while core services remain available across the account.</p></div>
               <div className="service-settings-grid">
                 <ServiceCard name="Catalog database" configured={data.services.database} detail="Products, jobs, source recipes, and activity history are persistent." />
-                <ServiceCard name="AI enrichment" configured={data.services.groq} detail="Fast cloud generation with automatic private-model fallback in eight languages." />
+                <ServiceCard name="ScrapifyAI" configured={data.services.groq} detail="Fast cloud generation with automatic private-model fallback in eight languages." />
                 <article className="panel settings-card shopify-setting-card">
                   <span className="setting-service-icon"><ShoppingBag size={18} /></span>
                   <span className="kicker">WORKSPACE INTEGRATION</span>
@@ -1391,7 +1391,7 @@ export default function Home() {
                 {!aiProgress.logs.length && <div className="empty-log"><span className="spinner dark" /> Preparing the first product…</div>}
               </div>
             </div>
-            <div className="ai-tracker-assurance"><CheckCircle2 size={16} /><span><strong>Safe continuous processing</strong><small>Scrappify continues through the entire queue and automatically retries temporary AI failures up to three times.</small></span></div>
+            <div className="ai-tracker-assurance"><CheckCircle2 size={16} /><span><strong>ScrapifyAI continuous processing</strong><small>Scrappify continues through the entire queue and automatically retries temporary AI failures up to three times.</small></span></div>
             <div className="tracker-modal-actions">
               {aiProgress.status === "running" && <button className="danger-button" onClick={() => { aiCancelRequested.current = true; notify("AI will stop safely after the current request"); }}>Stop after current product</button>}
               <button className="secondary-button" onClick={() => setShowAiTracker(false)}>Minimize tracker</button>
