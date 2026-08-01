@@ -325,7 +325,12 @@ export default function Home() {
         setActive("Settings");
         void loadData(true);
       } else {
-        setToast(result === "invalid_signature" || result === "invalid_state" ? "Shopify security validation failed. Please try again." : "Shopify connection could not be completed");
+        const message = result === "invalid_signature"
+          ? "Shopify signature could not be verified. Confirm the Shopify client secret in Vercel."
+          : result === "invalid_state"
+            ? "Your Shopify connection session expired. Start the connection again from Settings."
+            : "Shopify connection could not be completed";
+        setToast(message);
       }
     }, 0);
     return () => window.clearTimeout(feedback);

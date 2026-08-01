@@ -10,13 +10,26 @@ function returnToApp(request: Request, status: string) {
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
-    if (!await verifyShopifyQueryHmac(url.searchParams)) return returnToApp(request, "invalid_signature");
+    if (!await verifyShopifyQueryHmac(url.searchParams)) {
+      console.error("Shopify OAuth callback rejected: HMAC validation failed");
+      return returnToApp(request, "invalid_signature");
+    }
     const auth = await requireWorkspace(request);
     if (!auth.context) return Response.redirect(new URL("/login?shopify=resume", request.url), 302);
     const shop = normalizeShopDomain(url.searchParams.get("shop") ?? "");
     const code = url.searchParams.get("code") ?? "";
     const state = await verifyShopifyState(url.searchParams.get("state") ?? "");
-    if (!shop || !code || !state || state.shop !== shop || state.workspaceId !== auth.context.workspace.id || state.userId !== auth.context.user.id) {
+    if (!shop || !code || !state || state.shop !== shop || state.userId !== auth.context.user.id) {
+      console.error("Shopify OAuth callback rejected: signed state validation failed");
+      return returnToApp(request, "invalid_state");
+    }
+    const sql = db();
+    const memberships = await sql`
+      SELECT role FROM workspace_members
+      WHERE workspace_id = ${state.workspaceId}::uuid AND user_id = ${auth.context.user.id}
+    `;
+    if (!memberships.length || !["owner", "admin"].includes(String(memberships[0].role))) {
+      console.error("Shopify OAuth callback rejected: workspace membership validation failed");
       return returnToApp(request, "invalid_state");
     }
     const config = shopifyConfig(request);
@@ -28,10 +41,9 @@ export async function GET(request: Request) {
     const tokenPayload = await tokenResponse.json();
     if (!tokenResponse.ok || !tokenPayload.access_token) return returnToApp(request, "token_failed");
     const encryptedToken = await encryptSecret(String(tokenPayload.access_token));
-    const sql = db();
     await sql`
       INSERT INTO workspace_shopify_integrations (workspace_id, store_domain, access_token_encrypted, api_version)
-      VALUES (${auth.context.workspace.id}::uuid, ${shop}, ${encryptedToken}, ${config.apiVersion})
+      VALUES (${state.workspaceId}::uuid, ${shop}, ${encryptedToken}, ${config.apiVersion})
       ON CONFLICT (workspace_id) DO UPDATE SET
         store_domain = EXCLUDED.store_domain,
         access_token_encrypted = EXCLUDED.access_token_encrypted,
@@ -46,7 +58,7 @@ export async function GET(request: Request) {
     }
     await sql`
       INSERT INTO activity_events(workspace_id, event_type, message, metadata)
-      VALUES (${auth.context.workspace.id}::uuid, 'shopify_connected', ${`Connected ${shop} through Shopify OAuth`},
+      VALUES (${state.workspaceId}::uuid, 'shopify_connected', ${`Connected ${shop} through Shopify OAuth`},
         ${JSON.stringify({ scopes: tokenPayload.scope ?? config.scopes, webhooks: webhookStatus })}::jsonb)
     `;
     return returnToApp(request, "connected");

@@ -74,8 +74,8 @@ export async function verifyShopifyQueryHmac(searchParams: URLSearchParams) {
   const supplied = searchParams.get("hmac") ?? "";
   if (!clientSecret || !/^[a-f0-9]{64}$/i.test(supplied)) return false;
   const message = [...searchParams.entries()]
-    .filter(([key]) => key !== "hmac" && key !== "signature")
-    .sort(([left], [right]) => left.localeCompare(right))
+    .filter(([key]) => key !== "hmac")
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => `${leftKey}=${leftValue}`.localeCompare(`${rightKey}=${rightValue}`))
     .map(([key, value]) => `${key}=${value}`)
     .join("&");
   const expected = [...await hmac(message, clientSecret)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
