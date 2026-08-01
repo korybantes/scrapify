@@ -197,7 +197,7 @@ def _extract_product(card, source: str, category: str) -> dict | None:
     }
 
 
-def _upsert_product(product: dict, workspace_id: UUID) -> UUID:
+def _upsert_product(product: dict, workspace_id: UUID, job_id: UUID) -> UUID:
     with connection() as conn:
         row = conn.execute(
             """INSERT INTO products (
@@ -226,6 +226,12 @@ def _upsert_product(product: dict, workspace_id: UUID) -> UUID:
                 "raw_data": __import__("json").dumps(product["raw_data"], ensure_ascii=False),
             },
         ).fetchone()
+        conn.execute(
+            """INSERT INTO scrape_job_products(job_id, product_id, workspace_id)
+               VALUES (%s, %s, %s)
+               ON CONFLICT (job_id, product_id) DO NOTHING""",
+            (job_id, row["id"], workspace_id),
+        )
         conn.commit()
     return row["id"]
 
@@ -303,7 +309,7 @@ def run_scrape_job(job: dict) -> None:
                     product = _extract_product(card, source_host, job["category_name"])
                     if not product:
                         continue
-                    product_id = _upsert_product(product, workspace_id)
+                    product_id = _upsert_product(product, workspace_id, job_id)
                     page_product_ids.append(product_id)
                     found += 1
                     warnings += int(bool(product["price_warning"]))

@@ -13,10 +13,57 @@ export async function GET(request: Request) {
     const query = (url.searchParams.get("query") ?? "").trim();
     const source = (url.searchParams.get("source") ?? "").trim();
     const aiStatus = (url.searchParams.get("ai_status") ?? "").trim();
+    const sessionId = (url.searchParams.get("session_id") ?? "").trim() || null;
     const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
     const pageSize = Math.min(100, Math.max(20, Number(url.searchParams.get("page_size")) || 50));
     const offset = (page - 1) * pageSize;
     const searchPattern = `%${query}%`;
+    const productsQuery = sessionId
+      ? sql`
+          SELECT product.* FROM products product
+          WHERE product.workspace_id = ${workspaceId}::uuid
+            AND (${query} = '' OR title ILIKE ${searchPattern} OR vendor ILIKE ${searchPattern})
+            AND (${source} = '' OR source = ${source})
+            AND (${aiStatus} = '' OR ai_status = ${aiStatus})
+            AND EXISTS (
+              SELECT 1 FROM scrape_job_products link
+              WHERE link.product_id = product.id
+                AND link.job_id = ${sessionId}::uuid
+                AND link.workspace_id = ${workspaceId}::uuid
+            )
+          ORDER BY updated_at DESC
+          LIMIT ${pageSize} OFFSET ${offset}
+        `
+      : sql`
+          SELECT * FROM products
+          WHERE workspace_id = ${workspaceId}::uuid
+            AND (${query} = '' OR title ILIKE ${searchPattern} OR vendor ILIKE ${searchPattern})
+            AND (${source} = '' OR source = ${source})
+            AND (${aiStatus} = '' OR ai_status = ${aiStatus})
+          ORDER BY updated_at DESC
+          LIMIT ${pageSize} OFFSET ${offset}
+        `;
+    const productCountQuery = sessionId
+      ? sql`
+          SELECT count(*)::int AS count FROM products product
+          WHERE product.workspace_id = ${workspaceId}::uuid
+            AND (${query} = '' OR title ILIKE ${searchPattern} OR vendor ILIKE ${searchPattern})
+            AND (${source} = '' OR source = ${source})
+            AND (${aiStatus} = '' OR ai_status = ${aiStatus})
+            AND EXISTS (
+              SELECT 1 FROM scrape_job_products link
+              WHERE link.product_id = product.id
+                AND link.job_id = ${sessionId}::uuid
+                AND link.workspace_id = ${workspaceId}::uuid
+            )
+        `
+      : sql`
+          SELECT count(*)::int AS count FROM products
+          WHERE workspace_id = ${workspaceId}::uuid
+            AND (${query} = '' OR title ILIKE ${searchPattern} OR vendor ILIKE ${searchPattern})
+            AND (${source} = '' OR source = ${source})
+            AND (${aiStatus} = '' OR ai_status = ${aiStatus})
+        `;
 
     const [summaryRows, jobs, products, productCountRows, events, sourceRows, shopifyRows] = await Promise.all([
       sql`
@@ -39,23 +86,8 @@ export async function GET(request: Request) {
         WHERE workspace_id = ${workspaceId}::uuid
         ORDER BY created_at DESC LIMIT 20
       `,
-      sql`
-        SELECT * FROM products
-        WHERE workspace_id = ${workspaceId}::uuid
-          AND (${query} = '' OR title ILIKE ${searchPattern} OR vendor ILIKE ${searchPattern})
-          AND (${source} = '' OR source = ${source})
-          AND (${aiStatus} = '' OR ai_status = ${aiStatus})
-        ORDER BY updated_at DESC
-        LIMIT ${pageSize} OFFSET ${offset}
-      `,
-      sql`
-        SELECT count(*)::int AS count
-        FROM products
-        WHERE workspace_id = ${workspaceId}::uuid
-          AND (${query} = '' OR title ILIKE ${searchPattern} OR vendor ILIKE ${searchPattern})
-          AND (${source} = '' OR source = ${source})
-          AND (${aiStatus} = '' OR ai_status = ${aiStatus})
-      `,
+      productsQuery,
+      productCountQuery,
       sql`
         SELECT id, level, event_type, message, created_at
         FROM activity_events

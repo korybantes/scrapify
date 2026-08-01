@@ -69,6 +69,29 @@ type Job = {
   seo_language?: string;
 };
 
+type ScrapeSession = {
+  id: string;
+  source: string;
+  category_name: string;
+  category_url: string;
+  status: Job["status"];
+  progress: number;
+  pages_completed: number;
+  max_pages: number;
+  products_found: number;
+  warning_count: number;
+  seo_language: string;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  session_products: number;
+  ai_ready: number;
+  ai_pending: number;
+  ai_failed: number;
+  export_ready: number;
+  product_warnings: number;
+};
+
 type SavedSource = {
   id: string;
   name: string;
@@ -158,6 +181,7 @@ const nav = [
   ["Overview", LayoutDashboard],
   ["Products", Package],
   ["AI Studio", Sparkles],
+  ["Sessions", Activity],
   ["Exports", FileOutput],
   ["Sources", Globe2],
   ["Settings", Settings],
@@ -191,6 +215,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState("");
   const [aiStatusFilter, setAiStatusFilter] = useState("");
+  const [sessionFilter, setSessionFilter] = useState("");
   const [productPage, setProductPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(true);
@@ -209,6 +234,10 @@ export default function Home() {
   const [showTrackerDock, setShowTrackerDock] = useState(true);
   const [trackedJobId, setTrackedJobId] = useState("");
   const [savedSources, setSavedSources] = useState<SavedSource[]>([]);
+  const [sessions, setSessions] = useState<ScrapeSession[]>([]);
+  const [sessionMigrationRequired, setSessionMigrationRequired] = useState(false);
+  const [exportSessionId, setExportSessionId] = useState("");
+  const [exportScope, setExportScope] = useState<"ai_ready" | "all" | "selected">("ai_ready");
   const [account, setAccount] = useState<AccountData | null>(null);
   const [shopifyConnection, setShopifyConnection] = useState<ShopifyConnection>({
     configured: false,
@@ -231,25 +260,32 @@ export default function Home() {
       if (query) params.set("query", query);
       if (sourceFilter) params.set("source", sourceFilter);
       if (aiStatusFilter) params.set("ai_status", aiStatusFilter);
+      if (sessionFilter) params.set("session_id", sessionFilter);
       params.set("page", String(productPage));
       params.set("page_size", String(pageSize));
-      const [dataResponse, accountResponse, sourcesResponse, shopifyResponse] = await Promise.all([
+      const [dataResponse, accountResponse, sourcesResponse, shopifyResponse, sessionsResponse] = await Promise.all([
         fetch(`/api/data?${params}`, { cache: "no-store" }),
         fetch("/api/account", { cache: "no-store" }),
         fetch("/api/sources", { cache: "no-store" }),
         fetch("/api/integrations/shopify", { cache: "no-store" }),
+        fetch("/api/sessions", { cache: "no-store" }),
       ]);
-      const [payload, accountPayload, sourcesPayload, shopifyPayload] = await Promise.all([
+      const [payload, accountPayload, sourcesPayload, shopifyPayload, sessionsPayload] = await Promise.all([
         dataResponse.json(),
         accountResponse.json(),
         sourcesResponse.json(),
         shopifyResponse.json(),
+        sessionsResponse.json(),
       ]);
       if (!dataResponse.ok) throw new Error(payload.error ?? "Could not load live data");
       if (!accountResponse.ok) throw new Error(accountPayload.error ?? "Could not load account");
       setData(payload);
       setAccount(accountPayload);
       setSavedSources(sourcesResponse.ok ? sourcesPayload.sources : []);
+      const nextSessions = sessionsResponse.ok ? sessionsPayload.sessions || [] : [];
+      setSessions(nextSessions);
+      setSessionMigrationRequired(Boolean(sessionsPayload.migration_required));
+      setExportSessionId((current) => current || nextSessions.find((session: ScrapeSession) => session.status === "completed")?.id || nextSessions[0]?.id || "");
       if (shopifyResponse.ok) setShopifyConnection(shopifyPayload);
       setError("");
     } catch (loadError) {
@@ -257,7 +293,7 @@ export default function Home() {
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [query, sourceFilter, aiStatusFilter, productPage, pageSize]);
+  }, [query, sourceFilter, aiStatusFilter, sessionFilter, productPage, pageSize]);
 
   useEffect(() => {
     const initialLoad = window.setTimeout(() => void loadData(), 0);
@@ -288,6 +324,13 @@ export default function Home() {
     ? Math.round((aiProgress.completed / aiProgress.total) * 100)
     : 0;
   const aiRemaining = aiProgress ? Math.max(0, aiProgress.total - aiProgress.completed) : 0;
+  const selectedExportSession = sessions.find((session) => session.id === exportSessionId);
+  const activeProductSession = sessions.find((session) => session.id === sessionFilter);
+  const exportProductCount = exportScope === "selected"
+    ? selected.length
+    : exportSessionId
+      ? exportScope === "ai_ready" ? selectedExportSession?.export_ready || 0 : selectedExportSession?.session_products || 0
+      : exportScope === "ai_ready" ? data.summary.ai_enriched : data.summary.total_products;
 
   const createJob = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -503,13 +546,14 @@ export default function Home() {
     await processAiProducts(selected);
   };
 
-  const enrichAllRemaining = async () => {
+  const enrichAllRemaining = async (targetSessionId = "") => {
     if (busyAction === "ai") return;
     setBusyAction("select");
     try {
+      const sessionParam = targetSessionId ? `&session_id=${encodeURIComponent(targetSessionId)}` : "";
       const [pendingResponse, failedResponse] = await Promise.all([
-        fetch("/api/products/ids?ai_status=pending", { cache: "no-store" }),
-        fetch("/api/products/ids?ai_status=failed", { cache: "no-store" }),
+        fetch(`/api/products/ids?ai_status=pending${sessionParam}`, { cache: "no-store" }),
+        fetch(`/api/products/ids?ai_status=failed${sessionParam}`, { cache: "no-store" }),
       ]);
       const [pendingPayload, failedPayload] = await Promise.all([pendingResponse.json(), failedResponse.json()]);
       if (!pendingResponse.ok || !failedResponse.ok) {
@@ -763,10 +807,39 @@ export default function Home() {
       if (query) params.set("query", query);
       if (sourceFilter) params.set("source", sourceFilter);
       if (aiStatusFilter) params.set("ai_status", aiStatusFilter);
+      if (sessionFilter) params.set("session_id", sessionFilter);
     } else if (selected.length) {
       params.set("ids", selected.join(","));
     }
     window.location.href = `/api/export${params.size ? `?${params}` : ""}`;
+  };
+
+  const downloadGuidedExport = () => {
+    if (!exportProductCount) return notify("No products match this export choice");
+    const params = new URLSearchParams();
+    if (exportScope === "selected") {
+      params.set("ids", selected.join(","));
+    } else {
+      if (exportSessionId) params.set("session_id", exportSessionId);
+      params.set("readiness", exportScope);
+    }
+    window.location.href = `/api/export?${params}`;
+  };
+
+  const reviewSession = (session: ScrapeSession) => {
+    setSessionFilter(session.id);
+    setSelected([]);
+    setQuery("");
+    setSourceFilter("");
+    setAiStatusFilter("");
+    setProductPage(1);
+    setActive("Products");
+  };
+
+  const prepareSessionExport = (session: ScrapeSession) => {
+    setExportSessionId(session.id);
+    setExportScope("ai_ready");
+    setActive("Exports");
   };
 
   const selectAllMatching = async (statusOverride?: string) => {
@@ -775,6 +848,7 @@ export default function Home() {
       const params = new URLSearchParams();
       if (query) params.set("query", query);
       if (sourceFilter) params.set("source", sourceFilter);
+      if (sessionFilter) params.set("session_id", sessionFilter);
       const status = statusOverride ?? aiStatusFilter;
       if (status) params.set("ai_status", status);
       const response = await fetch(`/api/products/ids?${params}`, { cache: "no-store" });
@@ -808,7 +882,8 @@ export default function Home() {
             <button key={item} className={active === item ? "active" : ""} onClick={() => setActive(item)}>
               <Icon className="nav-icon" size={17} strokeWidth={1.8} />{item}
               {item === "Products" && <em>{data.summary.total_products.toLocaleString()}</em>}
-              {index === 4 && activeJob && <span className="live-dot" />}
+              {item === "Sessions" && sessions.length > 0 && <em>{sessions.length}</em>}
+              {index === 5 && activeJob && <span className="live-dot" />}
             </button>
           ))}
         </nav>
@@ -940,31 +1015,40 @@ export default function Home() {
               <ProductTable products={visibleProducts.slice(0, 8)} selected={selected} setSelected={setSelected} openProduct={setDrawer} openBulkEdit={() => setShowBulkEdit(true)} runAi={runAi} syncShopify={syncShopify} shopifyReady={data.services.shopify} downloadCsv={downloadCsv} busyAction={busyAction} />
             </>
           ) : active === "Products" ? (
-            <ProductWorkspace
-              products={visibleProducts}
-              sources={data.sources}
-              selected={selected}
-              setSelected={setSelected}
-              query={query}
-              setQuery={setQuery}
-              sourceFilter={sourceFilter}
-              setSourceFilter={setSourceFilter}
-              aiStatusFilter={aiStatusFilter}
-              setAiStatusFilter={setAiStatusFilter}
-              openProduct={setDrawer}
-              openBulkEdit={() => setShowBulkEdit(true)}
-              runAi={runAi}
-              syncShopify={syncShopify}
-              shopifyReady={data.services.shopify}
-              downloadCsv={downloadCsv}
-              busyAction={busyAction}
-              onNewJob={openRunModal}
-              pagination={data.pagination}
-              setPage={setProductPage}
-              pageSize={pageSize}
-              setPageSize={setPageSize}
-              selectAllMatching={() => void selectAllMatching()}
-            />
+            <>
+              {activeProductSession && (
+                <div className="session-context-bar">
+                  <span className="session-context-icon"><Activity size={17} /></span>
+                  <div><small>VIEWING ONE SCRAPE SESSION</small><strong>{activeProductSession.category_name}</strong><span>{activeProductSession.session_products.toLocaleString()} collected · {activeProductSession.ai_ready.toLocaleString()} AI ready</span></div>
+                  <button onClick={() => { setSessionFilter(""); setSelected([]); setProductPage(1); }}>View all workspace products <X size={14} /></button>
+                </div>
+              )}
+              <ProductWorkspace
+                products={visibleProducts}
+                sources={data.sources}
+                selected={selected}
+                setSelected={setSelected}
+                query={query}
+                setQuery={setQuery}
+                sourceFilter={sourceFilter}
+                setSourceFilter={setSourceFilter}
+                aiStatusFilter={aiStatusFilter}
+                setAiStatusFilter={setAiStatusFilter}
+                openProduct={setDrawer}
+                openBulkEdit={() => setShowBulkEdit(true)}
+                runAi={runAi}
+                syncShopify={syncShopify}
+                shopifyReady={data.services.shopify}
+                downloadCsv={downloadCsv}
+                busyAction={busyAction}
+                onNewJob={openRunModal}
+                pagination={data.pagination}
+                setPage={setProductPage}
+                pageSize={pageSize}
+                setPageSize={setPageSize}
+                selectAllMatching={() => void selectAllMatching()}
+              />
+            </>
           ) : active === "AI Studio" ? (
             <section className="ai-studio-page">
               <div className="ai-studio-hero">
@@ -1043,14 +1127,107 @@ export default function Home() {
                 </article>
               </div>
             </section>
+          ) : active === "Sessions" ? (
+            <section className="sessions-page">
+              <div className="sessions-hero">
+                <div>
+                  <span className="kicker">SCRAPE HISTORY</span>
+                  <h2>Every collection run, clearly organized.</h2>
+                  <p>A session keeps the products from one scrape together, so anyone can review its results, finish the AI work, and export only what is ready.</p>
+                </div>
+                <button className="primary-button" onClick={openRunModal}><Plus size={15} /> Start a new session</button>
+              </div>
+
+              {sessionMigrationRequired && (
+                <div className="session-migration-note"><Timer size={17} /><div><strong>Session history is being prepared</strong><span>New scraping sessions will appear here automatically after the server update is running.</span></div></div>
+              )}
+
+              <div className="session-overview-grid">
+                <span><Activity size={17} /><i><small>SESSIONS</small><strong>{sessions.length.toLocaleString()}</strong></i></span>
+                <span><Package size={17} /><i><small>COLLECTED</small><strong>{sessions.reduce((sum, session) => sum + session.session_products, 0).toLocaleString()}</strong></i></span>
+                <span><Sparkles size={17} /><i><small>AI READY</small><strong>{sessions.reduce((sum, session) => sum + session.ai_ready, 0).toLocaleString()}</strong></i></span>
+                <span><FileOutput size={17} /><i><small>EXPORT READY</small><strong>{sessions.reduce((sum, session) => sum + session.export_ready, 0).toLocaleString()}</strong></i></span>
+              </div>
+
+              <div className="session-list">
+                {sessions.map((session, index) => {
+                  const readyPercent = session.session_products ? Math.round((session.ai_ready / session.session_products) * 100) : 0;
+                  return (
+                    <article className="session-card" key={session.id}>
+                      <div className="session-number">{String(index + 1).padStart(2, "0")}</div>
+                      <div className="session-card-body">
+                        <div className="session-card-head">
+                          <div><span className="kicker">{session.source} · {new Date(session.created_at).toLocaleDateString()}</span><h3>{session.category_name}</h3><p>{session.pages_completed} of {session.max_pages} pages · SEO in {languages.find(([code]) => code === session.seo_language)?.[1] || session.seo_language}</p></div>
+                          <span className={`session-status ${session.status}`}>{session.status === "completed" && <CheckCircle2 size={12} />}{session.status}</span>
+                        </div>
+                        <div className="session-readiness"><div><span>AI-ready catalog</span><strong>{readyPercent}%</strong></div><div className="progress-track"><i style={{ width: `${readyPercent}%` }} /></div></div>
+                        <div className="session-metrics">
+                          <span><small>COLLECTED</small><strong>{session.session_products.toLocaleString()}</strong></span>
+                          <span><small>AI READY</small><strong>{session.ai_ready.toLocaleString()}</strong></span>
+                          <span><small>PENDING</small><strong>{session.ai_pending.toLocaleString()}</strong></span>
+                          <span className={session.ai_failed ? "needs-attention" : ""}><small>FAILED</small><strong>{session.ai_failed.toLocaleString()}</strong></span>
+                        </div>
+                        <div className="session-actions">
+                          <button className="secondary-button" disabled={!session.session_products} onClick={() => reviewSession(session)}><Search size={14} /> Review products</button>
+                          <button className="secondary-button" disabled={!session.ai_pending && !session.ai_failed} onClick={() => void enrichAllRemaining(session.id)}><Sparkles size={14} /> Finish AI</button>
+                          <button className="primary-button" disabled={!session.export_ready} onClick={() => prepareSessionExport(session)}><Download size={14} /> Export {session.export_ready.toLocaleString()} ready</button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+                {!sessions.length && !sessionMigrationRequired && <EmptyState title="No sessions yet" detail="Start a source to collect your first product session. Its results and AI readiness will appear here." />}
+              </div>
+            </section>
           ) : active === "Exports" ? (
-            <section className="panel export-page">
-              <div className="export-art"><span>CSV</span></div>
-              <span className="kicker">LIVE SHOPIFY EXPORT</span>
-              <h2>Export this workspace catalog.</h2>
-              <p>The download is generated at request time from current products—titles, prices, inventory, images and AI descriptions included.</p>
-              <div className="export-summary"><span><small>Products</small><strong>{selected.length || data.summary.total_products}</strong></span><span><small>Warnings</small><strong>{data.summary.warnings}</strong></span><span><small>AI ready</small><strong>{data.summary.ai_enriched}</strong></span></div>
-              <button className="primary-button wide" disabled={!data.summary.total_products} onClick={downloadCsv}>↓ Download live Shopify CSV</button>
+            <section className="guided-export-page">
+              <div className="guided-export-head">
+                <div><span className="kicker">GUIDED SHOPIFY EXPORT</span><h2>Choose what to export. We handle the rest.</h2><p>Create a clean Shopify CSV from one scrape session or your complete workspace—without spreadsheets or guesswork.</p></div>
+                <span className="export-format-pill"><FileOutput size={16} /> Shopify CSV</span>
+              </div>
+              <div className="guided-export-grid">
+                <article className="panel export-builder">
+                  <div className="export-step">
+                    <span className="export-step-number">1</span>
+                    <div><h3>Which collection?</h3><p>Choose a scrape session, or include the whole workspace.</p></div>
+                  </div>
+                  <label className="export-session-select">
+                    <select value={exportSessionId} onChange={(event) => { setExportSessionId(event.target.value); setExportScope("ai_ready"); }}>
+                      <option value="">All workspace products</option>
+                      {sessions.map((session) => <option key={session.id} value={session.id}>{session.category_name} · {new Date(session.created_at).toLocaleDateString()} · {session.session_products} products</option>)}
+                    </select>
+                    <ChevronDown size={16} />
+                  </label>
+
+                  <div className="export-divider" />
+                  <div className="export-step">
+                    <span className="export-step-number">2</span>
+                    <div><h3>What should be included?</h3><p>The recommended option exports only polished, AI-ready products.</p></div>
+                  </div>
+                  <div className="export-choice-list">
+                    <button className={exportScope === "ai_ready" ? "active" : ""} onClick={() => setExportScope("ai_ready")}>
+                      <span className="export-choice-icon ready"><Sparkles size={17} /></span><span><strong>AI-ready products</strong><small>Descriptions completed and ready for Shopify</small></span><em>Recommended</em><i>{exportSessionId ? selectedExportSession?.export_ready || 0 : data.summary.ai_enriched}</i>
+                    </button>
+                    <button className={exportScope === "all" ? "active" : ""} onClick={() => setExportScope("all")}>
+                      <span className="export-choice-icon"><Package size={17} /></span><span><strong>All collected products</strong><small>Includes pending and failed AI items</small></span><i>{exportSessionId ? selectedExportSession?.session_products || 0 : data.summary.total_products}</i>
+                    </button>
+                    <button className={exportScope === "selected" ? "active" : ""} disabled={!selected.length} onClick={() => setExportScope("selected")}>
+                      <span className="export-choice-icon"><Check size={17} /></span><span><strong>My selected products</strong><small>{selected.length ? "Your current selection from Products" : "Select products first to use this option"}</small></span><i>{selected.length}</i>
+                    </button>
+                  </div>
+                </article>
+
+                <aside className="panel export-receipt">
+                  <div className="export-receipt-icon"><FileOutput size={25} /></div>
+                  <span className="kicker">YOUR EXPORT</span>
+                  <h3>{selectedExportSession?.category_name || "Complete workspace"}</h3>
+                  <p>{exportScope === "ai_ready" ? "Only products with completed AI descriptions" : exportScope === "selected" ? "Only your manually selected products" : "Every collected product, regardless of AI status"}</p>
+                  <div className="export-count"><strong>{exportProductCount.toLocaleString()}</strong><span>products will be exported</span></div>
+                  <ul><li><Check size={13} /> Shopify-compatible columns</li><li><Check size={13} /> Product titles, pricing and inventory</li><li><Check size={13} /> Images, tags and SEO descriptions</li></ul>
+                  <button className="primary-button wide" disabled={!exportProductCount} onClick={downloadGuidedExport}><Download size={15} /> Download Shopify CSV</button>
+                  <small>The file is generated live from your current catalog.</small>
+                </aside>
+              </div>
             </section>
           ) : active === "Sources" ? (
             <section className="sources-page">

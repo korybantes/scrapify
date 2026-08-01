@@ -21,10 +21,11 @@ export async function GET(request: Request) {
     const sql = db();
     const url = new URL(request.url);
     const ids = (url.searchParams.get("ids") ?? "").split(",").filter(Boolean);
-    const scope = url.searchParams.get("scope") ?? "";
     const query = (url.searchParams.get("query") ?? "").trim();
     const source = (url.searchParams.get("source") ?? "").trim();
     const aiStatus = (url.searchParams.get("ai_status") ?? "").trim();
+    const sessionId = (url.searchParams.get("session_id") ?? "").trim() || null;
+    const readiness = (url.searchParams.get("readiness") ?? "all").trim();
     const searchPattern = `%${query}%`;
     const products = ids.length
       ? await sql`
@@ -33,18 +34,33 @@ export async function GET(request: Request) {
             AND workspace_id = ${auth.context.workspace.id}::uuid
           ORDER BY updated_at DESC
         `
-      : scope === "matching"
+      : sessionId
         ? await sql`
-            SELECT * FROM products
-            WHERE workspace_id = ${auth.context.workspace.id}::uuid
-              AND (${query} = '' OR title ILIKE ${searchPattern} OR vendor ILIKE ${searchPattern})
-              AND (${source} = '' OR source = ${source})
-              AND (${aiStatus} = '' OR ai_status = ${aiStatus})
-            ORDER BY updated_at DESC
-          `
-      : await sql`
+          SELECT product.* FROM products product
+          WHERE product.workspace_id = ${auth.context.workspace.id}::uuid
+            AND (${query} = '' OR title ILIKE ${searchPattern} OR vendor ILIKE ${searchPattern})
+            AND (${source} = '' OR source = ${source})
+            AND (${aiStatus} = '' OR ai_status = ${aiStatus})
+            AND EXISTS (
+              SELECT 1 FROM scrape_job_products link
+              WHERE link.product_id = product.id
+                AND link.job_id = ${sessionId}::uuid
+                AND link.workspace_id = ${auth.context.workspace.id}::uuid
+            )
+            AND (${readiness} <> 'ai_ready' OR (product.ai_status = 'enriched' AND product.body_html <> ''))
+            AND (${readiness} <> 'published' OR product.published = true)
+            AND (${readiness} <> 'needs_ai' OR product.ai_status IN ('pending', 'failed'))
+          ORDER BY product.updated_at DESC
+        `
+        : await sql`
           SELECT * FROM products
           WHERE workspace_id = ${auth.context.workspace.id}::uuid
+            AND (${query} = '' OR title ILIKE ${searchPattern} OR vendor ILIKE ${searchPattern})
+            AND (${source} = '' OR source = ${source})
+            AND (${aiStatus} = '' OR ai_status = ${aiStatus})
+            AND (${readiness} <> 'ai_ready' OR (ai_status = 'enriched' AND body_html <> ''))
+            AND (${readiness} <> 'published' OR published = true)
+            AND (${readiness} <> 'needs_ai' OR ai_status IN ('pending', 'failed'))
           ORDER BY updated_at DESC
         `;
     const rows = products.map((product) => [
@@ -75,7 +91,7 @@ export async function GET(request: Request) {
     return new Response(csv, {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename="scrappify-shopify-${new Date().toISOString().slice(0, 10)}.csv"`,
+        "Content-Disposition": `attachment; filename="scrappify-${sessionId ? `session-${sessionId.slice(0, 8)}-` : ""}shopify-${new Date().toISOString().slice(0, 10)}.csv"`,
       },
     });
   } catch (error) {
