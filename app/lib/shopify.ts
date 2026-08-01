@@ -19,18 +19,6 @@ export function shopifyConfig(request?: Request) {
   return { clientId, clientSecret, scopes, redirectUri, apiVersion };
 }
 
-function base64Url(bytes: Uint8Array) {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-
-function decodeBase64Url(value: string) {
-  const base64 = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
-  const binary = atob(base64);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
 async function hmac(message: string, secret: string) {
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(message)));
@@ -41,32 +29,6 @@ function safeEqual(left: string, right: string) {
   let difference = 0;
   for (let index = 0; index < left.length; index += 1) difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
   return difference === 0;
-}
-
-export async function createShopifyState(payload: { workspaceId: string; userId: string; shop: string }) {
-  const { clientSecret } = shopifyConfig();
-  if (!clientSecret) throw new Error("SHOPIFY_CLIENT_SECRET is not configured");
-  const body = base64Url(encoder.encode(JSON.stringify({ ...payload, expiresAt: Date.now() + 10 * 60 * 1000, nonce: crypto.randomUUID() })));
-  return `${body}.${base64Url(await hmac(body, clientSecret))}`;
-}
-
-export async function verifyShopifyState(value: string) {
-  const { clientSecret } = shopifyConfig();
-  const [body, signature] = value.split(".");
-  if (!clientSecret || !body || !signature) return null;
-  const expected = base64Url(await hmac(body, clientSecret));
-  if (!safeEqual(signature, expected)) return null;
-  try {
-    const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(body))) as {
-      workspaceId: string;
-      userId: string;
-      shop: string;
-      expiresAt: number;
-    };
-    return payload.expiresAt >= Date.now() ? payload : null;
-  } catch {
-    return null;
-  }
 }
 
 export async function verifyShopifyQueryHmac(searchParams: URLSearchParams) {
