@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- product image hosts are dynamic workspace source data */
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { authClient } from "@/app/lib/auth-client";
 import {
   Activity,
@@ -252,9 +252,9 @@ export default function Home() {
   const [busyAction, setBusyAction] = useState("");
   const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
   const [showAiTracker, setShowAiTracker] = useState(false);
-  const [showAiTrackerDock, setShowAiTrackerDock] = useState(true);
+  const [showAiTrackerDock, setShowAiTrackerDock] = useState(false);
+  const [aiJobId, setAiJobId] = useState("");
   const [shopifyProgress, setShopifyProgress] = useState<{ total: number; completed: number; failed: number } | null>(null);
-  const aiCancelRequested = useRef(false);
 
   const loadData = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -266,19 +266,21 @@ export default function Home() {
       if (sessionFilter) params.set("session_id", sessionFilter);
       params.set("page", String(productPage));
       params.set("page_size", String(pageSize));
-      const [dataResponse, accountResponse, sourcesResponse, shopifyResponse, sessionsResponse] = await Promise.all([
+      const [dataResponse, accountResponse, sourcesResponse, shopifyResponse, sessionsResponse, aiJobResponse] = await Promise.all([
         fetch(`/api/data?${params}`, { cache: "no-store" }),
         fetch("/api/account", { cache: "no-store" }),
         fetch("/api/sources", { cache: "no-store" }),
         fetch("/api/integrations/shopify", { cache: "no-store" }),
         fetch("/api/sessions", { cache: "no-store" }),
+        fetch("/api/ai/jobs", { cache: "no-store" }),
       ]);
-      const [payload, accountPayload, sourcesPayload, shopifyPayload, sessionsPayload] = await Promise.all([
+      const [payload, accountPayload, sourcesPayload, shopifyPayload, sessionsPayload, aiJobPayload] = await Promise.all([
         dataResponse.json(),
         accountResponse.json(),
         sourcesResponse.json(),
         shopifyResponse.json(),
         sessionsResponse.json(),
+        aiJobResponse.json(),
       ]);
       if (!dataResponse.ok) throw new Error(payload.error ?? "Could not load live data");
       if (!accountResponse.ok) throw new Error(accountPayload.error ?? "Could not load account");
@@ -290,6 +292,22 @@ export default function Home() {
       setSessionMigrationRequired(Boolean(sessionsPayload.migration_required));
       setExportSessionId((current) => current || nextSessions.find((session: ScrapeSession) => session.status === "completed")?.id || nextSessions[0]?.id || "");
       if (shopifyResponse.ok) setShopifyConnection(shopifyPayload);
+      if (aiJobResponse.ok && aiJobPayload.job) {
+        const job = aiJobPayload.job;
+        setAiJobId(String(job.id));
+        setAiProgress({
+          status: job.status === "queued" ? "running" : job.status,
+          completed: Number(job.completed || 0),
+          succeeded: Number(job.succeeded || 0),
+          total: Number(job.total || 0),
+          failed: Number(job.failed || 0),
+          current: job.current_product_title || (job.status === "queued" ? "Waiting for AI worker" : "Enrichment run complete"),
+          attempt: 0,
+          startedAt: new Date(job.started_at || job.created_at).getTime(),
+          logs: Array.isArray(job.logs) ? job.logs : [],
+        });
+        if (["queued", "running"].includes(job.status)) setShowAiTrackerDock(true);
+      }
       setError("");
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load live data");
@@ -354,6 +372,7 @@ export default function Home() {
     ? Math.round((aiProgress.completed / aiProgress.total) * 100)
     : 0;
   const aiRemaining = aiProgress ? Math.max(0, aiProgress.total - aiProgress.completed) : 0;
+  const aiRunActive = aiProgress?.status === "running";
   const selectedExportSession = sessions.find((session) => session.id === exportSessionId);
   const activeProductSession = sessions.find((session) => session.id === sessionFilter);
   const exportProductCount = exportScope === "selected"
@@ -461,111 +480,23 @@ export default function Home() {
 
     setBusyAction("ai");
     setShowAiTrackerDock(true);
-    aiCancelRequested.current = false;
     const targets = [...new Set(productIds)];
-    let succeeded = 0;
-    let failed = 0;
-    let logs: AiProcessLog[] = [];
-    const startedAt = Date.now();
-    const updateProgress = (
-      current: string,
-      attempt: number,
-      status: AiProgress["status"] = "running",
-    ) => {
-      setAiProgress({
-        status,
-        completed: succeeded + failed,
-        succeeded,
-        total: targets.length,
-        failed,
-        current,
-        attempt,
-        startedAt,
-        logs,
-      });
-    };
-    updateProgress("Preparing catalog enrichment", 0);
-
     try {
-      for (let index = 0; index < targets.length; index += 1) {
-        if (aiCancelRequested.current) break;
-        const productId = targets[index];
-        const product = data.products.find((item) => item.id === productId);
-        let productTitle = product?.title || `Product ${index + 1}`;
-        let enriched = false;
-        let finalError = "";
-
-        for (let attempt = 1; attempt <= 3 && !aiCancelRequested.current; attempt += 1) {
-          const activity: AiProcessLog = {
-            id: `${productId}-${attempt}-${Date.now()}`,
-            title: productTitle,
-            status: attempt === 1 ? "running" : "retrying",
-            message: attempt === 1 ? "Writing SEO description" : `Retry ${attempt} of 3`,
-            at: new Date().toISOString(),
-          };
-          logs = [activity, ...logs].slice(0, 60);
-          updateProgress(productTitle, attempt);
-
-          try {
-            const response = await fetch("/api/ai/enrich", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ product_ids: [productId], language: seoLanguage }),
-            });
-            const payload = await response.json();
-            productTitle = payload.products?.[0]?.title || productTitle;
-            if (!response.ok || payload.failed?.length) {
-              throw new Error(payload.error || payload.failed?.[0]?.error || "AI enrichment failed");
-            }
-            enriched = true;
-            succeeded += 1;
-            const completedActivity: AiProcessLog = {
-              id: `${productId}-success-${Date.now()}`,
-              title: productTitle,
-              status: "enriched",
-              message: `Description completed in ${languages.find(([code]) => code === seoLanguage)?.[1] || "the selected language"}`,
-              at: new Date().toISOString(),
-            };
-            logs = [completedActivity, ...logs].slice(0, 60);
-            break;
-          } catch (aiError) {
-            finalError = aiError instanceof Error ? aiError.message : "AI enrichment failed";
-            if (attempt < 3 && !aiCancelRequested.current) {
-              await new Promise((resolve) => window.setTimeout(resolve, attempt * 1200));
-            }
-          }
-        }
-
-        if (!enriched && !aiCancelRequested.current) {
-          failed += 1;
-          const failedActivity: AiProcessLog = {
-            id: `${productId}-failed-${Date.now()}`,
-            title: productTitle,
-            status: "failed",
-            message: finalError || "Could not complete after 3 attempts",
-            at: new Date().toISOString(),
-          };
-          logs = [failedActivity, ...logs].slice(0, 60);
-        }
-        updateProgress(productTitle, 0);
-      }
-
-      const label = languages.find(([code]) => code === seoLanguage)?.[1] ?? "selected language";
-      const cancelled = aiCancelRequested.current;
-      updateProgress(
-        cancelled ? "Stopped safely" : failed ? "Catalog run finished with items to retry" : "Every product is enriched",
-        0,
-        cancelled ? "cancelled" : failed ? "completed_with_errors" : "completed",
-      );
-      notify(cancelled
-        ? `AI run stopped · ${succeeded} products enriched`
-        : `${succeeded} products enriched in ${label}${failed ? ` · ${failed} need attention` : ""}`);
+      const response = await fetch("/api/ai/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product_ids: targets, language: seoLanguage }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not start AI enrichment");
+      setAiJobId(String(payload.job.id));
+      setAiProgress({ status: "running", completed: 0, succeeded: 0, total: targets.length, failed: 0, current: "Waiting for AI worker", attempt: 0, startedAt: Date.now(), logs: payload.job.logs || [] });
+      notify(`${targets.length} products queued for persistent AI enrichment`);
       await loadData(true);
-      return { succeeded, failed, cancelled };
+      return { succeeded: 0, failed: 0, cancelled: false };
     } catch (aiError) {
       notify(aiError instanceof Error ? aiError.message : "AI enrichment failed");
-      updateProgress("The enrichment run stopped unexpectedly", 0, "completed_with_errors");
-      return { succeeded, failed: Math.max(failed, targets.length - succeeded), cancelled: false };
+      return { succeeded: 0, failed: targets.length, cancelled: false };
     } finally {
       setBusyAction("");
     }
@@ -577,7 +508,7 @@ export default function Home() {
   };
 
   const enrichAllRemaining = async (targetSessionId = "") => {
-    if (busyAction === "ai") return;
+    if (busyAction === "ai" || aiRunActive) return notify("An AI enrichment run is already continuing in the background");
     setBusyAction("select");
     try {
       const sessionParam = targetSessionId ? `&session_id=${encodeURIComponent(targetSessionId)}` : "";
@@ -604,13 +535,24 @@ export default function Home() {
   };
 
   const writeDrawerWithAi = async () => {
-    if (!drawer || busyAction === "ai") return;
+    if (!drawer || busyAction === "ai" || aiRunActive) return;
     const productId = drawer.id;
-    const result = await processAiProducts([productId]);
-    if (!result.succeeded) return;
-    const response = await fetch(`/api/products/${productId}`, { cache: "no-store" });
+    setBusyAction("ai");
+    const aiResponse = await fetch("/api/ai/enrich", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ product_ids: [productId], language: seoLanguage }) });
+    const result = await aiResponse.json();
+    setBusyAction("");
+    if (!aiResponse.ok || result.failed?.length) return notify(result.error || result.failed?.[0]?.error || "AI enrichment failed");
+    const productResponse = await fetch(`/api/products/${productId}`, { cache: "no-store" });
+    const payload = await productResponse.json();
+    if (productResponse.ok) setDrawer(payload);
+  };
+
+  const cancelAiJob = async () => {
+    if (!aiJobId) return;
+    const response = await fetch(`/api/ai/jobs/${aiJobId}/cancel`, { method: "POST" });
     const payload = await response.json();
-    if (response.ok) setDrawer(payload);
+    notify(response.ok ? "AI enrichment cancelled" : payload.error || "Could not cancel AI job");
+    await loadData(true);
   };
 
   const bulkEdit = async (event: FormEvent<HTMLFormElement>) => {
@@ -1110,8 +1052,8 @@ export default function Home() {
                   <p>Filter the complete catalog by enrichment status, select a page or every matching product, then watch each description complete live.</p>
                 </div>
                 <div className="ai-hero-actions">
-                  <button className="secondary-button" disabled={busyAction === "select" || busyAction === "ai" || !data.services.groq} onClick={() => void enrichAllRemaining()}><Sparkles size={14} /> Enrich all remaining</button>
-                  <button className="primary-button" disabled={!selected.length || busyAction === "ai" || !data.services.groq} onClick={() => void runAi()}><Sparkles size={14} /> Enrich {selected.length || "selected"}</button>
+                  <button className="secondary-button" disabled={busyAction === "select" || busyAction === "ai" || aiRunActive || !data.services.groq} onClick={() => void enrichAllRemaining()}><Sparkles size={14} /> Enrich all remaining</button>
+                  <button className="primary-button" disabled={!selected.length || busyAction === "ai" || aiRunActive || !data.services.groq} onClick={() => void runAi()}><Sparkles size={14} /> Enrich {selected.length || "selected"}</button>
                 </div>
               </div>
 
@@ -1145,8 +1087,8 @@ export default function Home() {
                       <button className="ai-view-tracker" onClick={() => setShowAiTracker(true)}>View detailed progress <Maximize2 size={12} /></button>
                     </div>
                   )}
-                  <button className="primary-button wide" disabled={!selected.length || busyAction === "ai" || !data.services.groq} onClick={() => void runAi()}>
-                    {busyAction === "ai" ? <><span className="spinner" /> Enriching {aiProgress?.completed || 0} of {aiProgress?.total || selected.length}</> : <><Sparkles size={15} /> Enrich {selected.length} in {languages.find(([code]) => code === seoLanguage)?.[1]}</>}
+                  <button className="primary-button wide" disabled={!selected.length || busyAction === "ai" || aiRunActive || !data.services.groq} onClick={() => void runAi()}>
+                    {busyAction === "ai" || aiRunActive ? <><span className="spinner" /> Enriching {aiProgress?.completed || 0} of {aiProgress?.total || selected.length}</> : <><Sparkles size={15} /> Enrich {selected.length} in {languages.find(([code]) => code === seoLanguage)?.[1]}</>}
                   </button>
                   {data.summary.ai_failed > 0 && <button className="retry-failed-button" disabled={busyAction === "select"} onClick={() => void selectAllMatching("failed")}><RefreshCw size={14} /> Select all {data.summary.ai_failed} failed products to retry</button>}
                 </article>
@@ -1574,7 +1516,7 @@ export default function Home() {
                     <select aria-label="AI description language" value={seoLanguage} onChange={(event) => setSeoLanguage(event.target.value)}>
                       {languages.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
                     </select>
-                    <button type="button" disabled={busyAction === "ai" || !data.services.groq} onClick={() => void writeDrawerWithAi()}>
+                    <button type="button" disabled={busyAction === "ai" || aiRunActive || !data.services.groq} onClick={() => void writeDrawerWithAi()}>
                       {busyAction === "ai" ? <><span className="spinner dark" /> Writing</> : <><Sparkles size={13} /> Write with AI</>}
                     </button>
                   </span>
@@ -1635,7 +1577,7 @@ export default function Home() {
             </div>
             <div className="ai-tracker-assurance"><CheckCircle2 size={16} /><span><strong>ScrapifyAI continuous processing</strong><small>Scrappify continues through the entire queue and automatically retries temporary AI failures up to three times.</small></span></div>
             <div className="tracker-modal-actions">
-              {aiProgress.status === "running" && <button className="danger-button" onClick={() => { aiCancelRequested.current = true; notify("AI will stop safely after the current request"); }}>Stop after current product</button>}
+              {aiProgress.status === "running" && <button className="danger-button" onClick={() => void cancelAiJob()}>Stop after current product</button>}
               <button className="secondary-button" onClick={() => setShowAiTracker(false)}>Minimize tracker</button>
               {aiProgress.status !== "running" && <button className="primary-button" onClick={() => { setShowAiTracker(false); setShowAiTrackerDock(false); }}>Done</button>}
             </div>

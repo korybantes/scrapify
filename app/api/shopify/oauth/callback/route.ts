@@ -31,10 +31,17 @@ export async function GET(request: Request) {
     const code = url.searchParams.get("code") ?? "";
     const nonce = url.searchParams.get("state") ?? "";
     const sql = db();
-    const states = nonce ? await sql`
+    let states = nonce ? await sql`
       SELECT workspace_id, user_id, shop, expires_at FROM shopify_oauth_states
       WHERE nonce = ${nonce} AND expires_at >= now()
     ` : [];
+    if (!states.length && shop) {
+      states = await sql`
+        SELECT workspace_id, user_id, shop, expires_at FROM shopify_oauth_states
+        WHERE user_id = ${auth.context.user.id} AND shop = ${shop} AND expires_at >= now()
+        ORDER BY created_at DESC LIMIT 1
+      `;
+    }
     const state = states[0];
     const cookieMatches = Boolean(nonce && cookieValue(request, "scrappify_shopify_state") === nonce);
     if (!shop || !code || (!state && !cookieMatches)) {
