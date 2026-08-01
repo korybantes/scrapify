@@ -25,7 +25,7 @@ function AuthLogo({ light = false }: { light?: boolean }) {
   );
 }
 
-export default function LoginForm({ initialMode }: { initialMode: "signin" | "signup" }) {
+export default function LoginForm({ initialMode, shop = "" }: { initialMode: "signin" | "signup"; shop?: string }) {
   const [mode, setMode] = useState(initialMode);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -48,7 +48,7 @@ export default function LoginForm({ initialMode }: { initialMode: "signin" | "si
       return;
     }
     await fetch("/api/account");
-    window.location.assign("/app");
+    window.location.assign(shop ? `/app?shop=${encodeURIComponent(shop)}` : "/app");
   }
 
   const switchMode = (nextMode: "signin" | "signup") => {

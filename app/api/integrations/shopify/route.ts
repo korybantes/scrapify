@@ -22,6 +22,7 @@ export async function GET(request: Request) {
     `;
     return Response.json({
       configured: Boolean(rows.length),
+      oauth_available: Boolean(process.env.SHOPIFY_CLIENT_ID && process.env.SHOPIFY_CLIENT_SECRET),
       store_domain: rows[0]?.store_domain ?? "",
       api_version: rows[0]?.api_version ?? "2026-07",
       updated_at: rows[0]?.updated_at ?? null,

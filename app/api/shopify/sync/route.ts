@@ -35,6 +35,18 @@ export async function POST(request: Request) {
       WHERE id = ANY(${ids}::uuid[])
         AND workspace_id = ${auth.context.workspace.id}::uuid
     `;
+    let locationId = "";
+    try {
+      const locationResponse = await fetch(`https://${domain}/admin/api/${apiVersion}/graphql.json`, {
+        method: "POST",
+        headers: { "X-Shopify-Access-Token": token, "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "query ScrapifyLocation { locations(first: 1) { nodes { id name } } }" }),
+      });
+      const locationPayload = await locationResponse.json();
+      locationId = String(locationPayload.data?.locations?.nodes?.[0]?.id || "");
+    } catch {
+      locationId = "";
+    }
     const synced: Array<{ id: string; shopify_product_id: string }> = [];
     const failed: Array<{ id: string; error: string }> = [];
 
@@ -44,8 +56,9 @@ export async function POST(request: Request) {
         const variant: Record<string, unknown> = {
           optionValues: [{ optionName: "Title", name: "Default Title" }],
           price: String(product.sale_price ?? "0.00"),
-          inventoryItem: { sku: String(product.id) },
+          inventoryItem: { sku: String(product.id), tracked: true },
         };
+        if (locationId) variant.inventoryQuantities = [{ locationId, name: "available", quantity: Number(product.inventory_qty || 0) }];
         if (product.compare_at_price && Number(product.compare_at_price) > Number(product.sale_price ?? 0)) {
           variant.compareAtPrice = String(product.compare_at_price);
         }
@@ -57,7 +70,7 @@ export async function POST(request: Request) {
             body: JSON.stringify({
               query: mutation,
               variables: {
-                identifier: { handle },
+                identifier: product.shopify_product_id ? { id: product.shopify_product_id } : null,
                 input: {
                   title: product.title,
                   handle,
@@ -68,6 +81,7 @@ export async function POST(request: Request) {
                   status: product.published ? "ACTIVE" : "DRAFT",
                   productOptions: [{ name: "Title", values: [{ name: "Default Title" }] }],
                   variants: [variant],
+                  files: product.image_url ? [{ originalSource: product.image_url, alt: product.title }] : [],
                 },
               },
             }),

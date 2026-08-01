@@ -82,9 +82,33 @@ two-service layout for local or compose-based deployment.
 - `GROQ_API_KEY`
 - `GROQ_MODEL`
 - `ALLOWED_SOURCE_HOSTS`
+- `SHOPIFY_CLIENT_ID`
+- `SHOPIFY_CLIENT_SECRET`
+- `SHOPIFY_SCOPES`
+- `SHOPIFY_REDIRECT_URI`
 
-Each workspace owner connects its Shopify store from the Settings screen. The
-Admin API token is encrypted at rest with `WORKSPACE_ENCRYPTION_SECRET`.
+Each workspace owner connects Shopify through the official OAuth approval
+screen. The resulting offline Admin API token is encrypted at rest with
+`WORKSPACE_ENCRYPTION_SECRET`; merchants never copy or expose a token.
+
+### Shopify app configuration
+
+Create a public app in the Shopify Dev Dashboard and configure:
+
+- App URL: `https://scrapify-mu.vercel.app/app`
+- Allowed callback URL: `https://scrapify-mu.vercel.app/api/shopify/oauth/callback`
+- Webhook URL: `https://scrapify-mu.vercel.app/api/shopify/webhooks`
+- Scopes: `read_products,write_products,read_locations,write_inventory`
+
+Add the client ID and client secret to Vercel, redeploy, then use **Settings →
+Connect Shopify**. Installations initiated from Shopify are also supported: an
+existing merchant is returned to OAuth automatically, while a new merchant is
+asked to create a Scrapify account first.
+
+The callback validates Shopify's HMAC and a signed, expiring workspace state
+before exchanging the authorization code. The app registers uninstall and
+privacy webhooks after installation. AI-ready products can then be published
+directly from the guided Export screen.
 
 ### Backend environment
 

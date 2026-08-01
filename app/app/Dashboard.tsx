@@ -122,6 +122,7 @@ type AccountData = {
 
 type ShopifyConnection = {
   configured: boolean;
+  oauth_available: boolean;
   store_domain: string;
   api_version: string;
   updated_at: string | null;
@@ -241,6 +242,7 @@ export default function Home() {
   const [account, setAccount] = useState<AccountData | null>(null);
   const [shopifyConnection, setShopifyConnection] = useState<ShopifyConnection>({
     configured: false,
+    oauth_available: false,
     store_domain: "",
     api_version: "2026-07",
     updated_at: null,
@@ -251,6 +253,7 @@ export default function Home() {
   const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
   const [showAiTracker, setShowAiTracker] = useState(false);
   const [showAiTrackerDock, setShowAiTrackerDock] = useState(true);
+  const [shopifyProgress, setShopifyProgress] = useState<{ total: number; completed: number; failed: number } | null>(null);
   const aiCancelRequested = useRef(false);
 
   const loadData = useCallback(async (quiet = false) => {
@@ -304,6 +307,28 @@ export default function Home() {
       window.clearTimeout(notificationState);
       window.clearInterval(interval);
     };
+  }, [loadData]);
+
+  useEffect(() => {
+    const search = new URLSearchParams(window.location.search);
+    const shop = (search.get("shop") || "").trim().toLowerCase();
+    if (shop.endsWith(".myshopify.com")) {
+      window.location.assign(`/api/shopify/oauth/start?shop=${encodeURIComponent(shop)}`);
+      return;
+    }
+    const result = search.get("shopify");
+    if (!result) return;
+    window.history.replaceState({}, "", "/app");
+    const feedback = window.setTimeout(() => {
+      if (result === "connected") {
+        setToast("Shopify store connected successfully");
+        setActive("Settings");
+        void loadData(true);
+      } else {
+        setToast(result === "invalid_signature" || result === "invalid_state" ? "Shopify security validation failed. Please try again." : "Shopify connection could not be completed");
+      }
+    }, 0);
+    return () => window.clearTimeout(feedback);
   }, [loadData]);
 
   const notify = (message: string) => {
@@ -656,23 +681,25 @@ export default function Home() {
     markNotificationsRead();
   };
 
-  const syncShopify = async () => {
-    if (!selected.length) return notify("Select at least one real product first");
+  const syncShopifyProducts = async (productIds: string[]) => {
+    if (!productIds.length) return notify("Select at least one real product first");
     if (!data.services.shopify) return notify("Shopify Admin API is not configured yet");
     setBusyAction("shopify");
+    setShopifyProgress({ total: productIds.length, completed: 0, failed: 0 });
     try {
       let synced = 0;
       let failed = 0;
-      for (let index = 0; index < selected.length; index += 50) {
+      for (let index = 0; index < productIds.length; index += 10) {
         const response = await fetch("/api/shopify/sync", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ product_ids: selected.slice(index, index + 50) }),
+          body: JSON.stringify({ product_ids: productIds.slice(index, index + 10) }),
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error ?? "Shopify sync failed");
         synced += payload.synced.length;
         failed += payload.failed.length;
+        setShopifyProgress({ total: productIds.length, completed: synced + failed, failed });
       }
       notify(`${synced} products synced to Shopify${failed ? ` · ${failed} failed` : ""}`);
       await loadData(true);
@@ -682,6 +709,8 @@ export default function Home() {
       setBusyAction("");
     }
   };
+
+  const syncShopify = async () => syncShopifyProducts(selected);
 
   const saveProduct = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -776,27 +805,45 @@ export default function Home() {
     }
   };
 
-  const saveShopify = async (event: FormEvent<HTMLFormElement>) => {
+  const connectShopify = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setBusyAction("shopify-settings");
     const form = new FormData(event.currentTarget);
-    const response = await fetch("/api/integrations/shopify", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        store_domain: form.get("store_domain"),
-        access_token: form.get("access_token"),
-      }),
-    });
-    const payload = await response.json();
-    if (response.ok) {
+    const shop = String(form.get("store_domain") || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (!shop.endsWith(".myshopify.com")) return notify("Enter your permanent .myshopify.com store domain");
+    window.location.assign(`/api/shopify/oauth/start?shop=${encodeURIComponent(shop)}`);
+  };
+
+  const disconnectShopify = async () => {
+    if (!window.confirm("Disconnect this Shopify store from the current workspace?")) return;
+    setBusyAction("shopify-settings");
+    try {
+      const response = await fetch("/api/integrations/shopify", { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Could not disconnect Shopify");
       setShowShopify(false);
-      notify("Shopify connected to this workspace");
+      notify("Shopify store disconnected");
       await loadData(true);
-    } else {
-      notify(payload.error ?? "Could not connect Shopify");
+    } catch (disconnectError) {
+      notify(disconnectError instanceof Error ? disconnectError.message : "Could not disconnect Shopify");
+    } finally {
+      setBusyAction("");
     }
-    setBusyAction("");
+  };
+
+  const publishGuidedToShopify = async () => {
+    if (!data.services.shopify) return setShowShopify(true);
+    if (exportScope === "selected") return syncShopifyProducts(selected);
+    const params = new URLSearchParams();
+    if (exportSessionId) params.set("session_id", exportSessionId);
+    if (exportScope === "ai_ready") params.set("ai_status", "enriched");
+    try {
+      const response = await fetch(`/api/products/ids?${params}`, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Could not prepare Shopify products");
+      await syncShopifyProducts(payload.ids);
+    } catch (publishError) {
+      notify(publishError instanceof Error ? publishError.message : "Could not prepare Shopify products");
+    }
   };
 
   const downloadCsv = () => {
@@ -1224,8 +1271,10 @@ export default function Home() {
                   <p>{exportScope === "ai_ready" ? "Only products with completed AI descriptions" : exportScope === "selected" ? "Only your manually selected products" : "Every collected product, regardless of AI status"}</p>
                   <div className="export-count"><strong>{exportProductCount.toLocaleString()}</strong><span>products will be exported</span></div>
                   <ul><li><Check size={13} /> Shopify-compatible columns</li><li><Check size={13} /> Product titles, pricing and inventory</li><li><Check size={13} /> Images, tags and SEO descriptions</li></ul>
+                  {shopifyProgress && busyAction === "shopify" && <div className="shopify-publish-progress"><div><span>Publishing to Shopify</span><strong>{shopifyProgress.completed}/{shopifyProgress.total}</strong></div><div className="progress-track"><i style={{ width: `${Math.round((shopifyProgress.completed / shopifyProgress.total) * 100)}%` }} /></div><small>{shopifyProgress.failed ? `${shopifyProgress.failed} need attention` : "Creating products securely"}</small></div>}
+                  <button className="shopify-publish-button wide" disabled={!exportProductCount || busyAction === "shopify"} onClick={() => void publishGuidedToShopify()}><ShoppingBag size={15} /> {data.services.shopify ? busyAction === "shopify" ? "Publishing…" : "Publish directly to Shopify" : "Connect Shopify to publish"}</button>
                   <button className="primary-button wide" disabled={!exportProductCount} onClick={downloadGuidedExport}><Download size={15} /> Download Shopify CSV</button>
-                  <small>The file is generated live from your current catalog.</small>
+                  <small>Publish directly or download a live backup from your current catalog.</small>
                 </aside>
               </div>
             </section>
@@ -1284,8 +1333,8 @@ export default function Home() {
                 <article className="panel settings-card shopify-setting-card">
                   <span className="setting-service-icon"><ShoppingBag size={18} /></span>
                   <span className="kicker">WORKSPACE INTEGRATION</span>
-                  <h2>Shopify Admin API</h2>
-                  <p>{shopifyConnection.configured ? `${shopifyConnection.store_domain} is connected only to this workspace.` : "Connect a store domain and custom-app access token for this workspace."}</p>
+                  <h2>Shopify store</h2>
+                  <p>{shopifyConnection.configured ? `${shopifyConnection.store_domain} is securely connected to this workspace.` : "Install Scrapify on your store with Shopify's secure approval screen—no access tokens to copy."}</p>
                   <div className="setting-row"><span><i className={shopifyConnection.configured ? "" : "offline"} />{shopifyConnection.configured ? "Connected" : "Not configured"}</span><button onClick={() => setShowShopify(true)}>{shopifyConnection.configured ? "Manage connection" : "Connect Shopify"}</button></div>
                 </article>
               </div>
@@ -1452,12 +1501,23 @@ export default function Home() {
 
       {showShopify && (
         <div className="drawer-backdrop centered" onClick={() => setShowShopify(false)}>
-          <form className="job-modal" onSubmit={saveShopify} onClick={(event) => event.stopPropagation()}>
+          <form className="job-modal shopify-connect-modal" onSubmit={connectShopify} onClick={(event) => event.stopPropagation()}>
             <button type="button" className="drawer-close" onClick={() => setShowShopify(false)}>×</button>
-            <span className="kicker">SHOPIFY CONNECTION</span><h2>Connect this workspace</h2><p>The access token is encrypted before storage. It is never returned to the browser after saving.</p>
-            <label>Store domain<input name="store_domain" required defaultValue={shopifyConnection.store_domain} placeholder="your-store.myshopify.com" /></label>
-            <label>Admin API access token<input name="access_token" type="password" required={!shopifyConnection.configured} placeholder={shopifyConnection.configured ? "Leave blank to keep current token" : "shpat_…"} /></label>
-            <button className="primary-button wide" disabled={busyAction === "shopify-settings"}>{busyAction === "shopify-settings" ? "Connecting…" : "Save connection"}</button>
+            <span className="shopify-connect-mark"><ShoppingBag size={25} /></span>
+            {shopifyConnection.configured ? <>
+              <span className="kicker">CONNECTED STORE</span><h2>{shopifyConnection.store_domain}</h2><p>This store can receive products from the current workspace. Scrapify never exposes its Shopify access token.</p>
+              <div className="shopify-connected-summary"><span><CheckCircle2 size={16} /></span><div><strong>Installation active</strong><small>Connected {shopifyConnection.updated_at ? formatDate(shopifyConnection.updated_at) : "through Shopify"}</small></div></div>
+              <div className="shopify-permission-list"><span><Check size={13} /> Create and update products</span><span><Check size={13} /> Publish AI-ready descriptions</span><span><Check size={13} /> Manage inventory and variants</span></div>
+              <button type="button" className="primary-button wide" onClick={() => window.open(`https://${shopifyConnection.store_domain}/admin/products`, "_blank", "noopener,noreferrer")}>Open Shopify products <Globe2 size={14} /></button>
+              <button type="button" className="shopify-disconnect" disabled={busyAction === "shopify-settings"} onClick={() => void disconnectShopify()}>{busyAction === "shopify-settings" ? "Disconnecting…" : "Disconnect store"}</button>
+            </> : <>
+              <span className="kicker">ONE-CLICK INSTALLATION</span><h2>Connect your Shopify store</h2><p>You will continue to Shopify, review the requested Scrapify permissions, and approve the installation. No technical setup is required.</p>
+              <div className="shopify-connect-steps"><span><i>1</i>Enter your store address</span><span><i>2</i>Approve in Shopify</span><span><i>3</i>Publish products</span></div>
+              <label>Your Shopify store address<input name="store_domain" required defaultValue="" placeholder="your-store.myshopify.com" autoComplete="url" /></label>
+              {!shopifyConnection.oauth_available && <div className="shopify-config-warning">Shopify installation is not available yet. Confirm the OAuth variables are enabled for this Vercel deployment.</div>}
+              <button className="primary-button wide" disabled={!shopifyConnection.oauth_available}><ShoppingBag size={15} /> Continue securely to Shopify</button>
+              <small className="shopify-security-note">Shopify will show exactly what Scrapify can access before you approve.</small>
+            </>}
           </form>
         </div>
       )}
