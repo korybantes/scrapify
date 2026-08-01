@@ -4,7 +4,18 @@ import { normalizeShopDomain, registerShopifyWebhooks, shopifyConfig, verifyShop
 import { requireWorkspace } from "@/app/lib/workspace";
 
 function returnToApp(request: Request, status: string) {
-  return Response.redirect(new URL(`/app?shopify=${encodeURIComponent(status)}`, request.url), 302);
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: new URL(`/app?shopify=${encodeURIComponent(status)}`, request.url).toString(),
+      "Set-Cookie": "scrappify_shopify_state=; Path=/api/shopify/oauth; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
+    },
+  });
+}
+
+function cookieValue(request: Request, name: string) {
+  const part = request.headers.get("cookie")?.split(";").map((value) => value.trim()).find((value) => value.startsWith(`${name}=`));
+  return part ? decodeURIComponent(part.slice(name.length + 1)) : "";
 }
 
 export async function GET(request: Request) {
@@ -21,18 +32,23 @@ export async function GET(request: Request) {
     const nonce = url.searchParams.get("state") ?? "";
     const sql = db();
     const states = nonce ? await sql`
-      DELETE FROM shopify_oauth_states
+      SELECT workspace_id, user_id, shop, expires_at FROM shopify_oauth_states
       WHERE nonce = ${nonce} AND expires_at >= now()
-      RETURNING workspace_id, user_id, shop
     ` : [];
     const state = states[0];
-    if (!shop || !code || !state || String(state.shop) !== shop || String(state.user_id) !== auth.context.user.id) {
-      console.error("Shopify OAuth callback rejected: signed state validation failed");
+    const cookieMatches = Boolean(nonce && cookieValue(request, "scrappify_shopify_state") === nonce);
+    if (!shop || !code || (!state && !cookieMatches)) {
+      console.error("Shopify OAuth callback rejected: installation state not found", { hasNonce: Boolean(nonce), cookieMatches, stateFound: Boolean(state) });
       return returnToApp(request, "invalid_state");
     }
+    if (state && (String(state.shop) !== shop || String(state.user_id) !== auth.context.user.id)) {
+      console.error("Shopify OAuth callback rejected: installation state ownership mismatch");
+      return returnToApp(request, "invalid_state");
+    }
+    const workspaceId = state ? String(state.workspace_id) : auth.context.workspace.id;
     const memberships = await sql`
       SELECT role FROM workspace_members
-      WHERE workspace_id = ${state.workspace_id}::uuid AND user_id = ${auth.context.user.id}
+      WHERE workspace_id = ${workspaceId}::uuid AND user_id = ${auth.context.user.id}
     `;
     if (!memberships.length || !["owner", "admin"].includes(String(memberships[0].role))) {
       console.error("Shopify OAuth callback rejected: workspace membership validation failed");
@@ -49,7 +65,7 @@ export async function GET(request: Request) {
     const encryptedToken = await encryptSecret(String(tokenPayload.access_token));
     await sql`
       INSERT INTO workspace_shopify_integrations (workspace_id, store_domain, access_token_encrypted, api_version)
-      VALUES (${state.workspace_id}::uuid, ${shop}, ${encryptedToken}, ${config.apiVersion})
+      VALUES (${workspaceId}::uuid, ${shop}, ${encryptedToken}, ${config.apiVersion})
       ON CONFLICT (workspace_id) DO UPDATE SET
         store_domain = EXCLUDED.store_domain,
         access_token_encrypted = EXCLUDED.access_token_encrypted,
@@ -64,9 +80,10 @@ export async function GET(request: Request) {
     }
     await sql`
       INSERT INTO activity_events(workspace_id, event_type, message, metadata)
-      VALUES (${state.workspace_id}::uuid, 'shopify_connected', ${`Connected ${shop} through Shopify OAuth`},
+      VALUES (${workspaceId}::uuid, 'shopify_connected', ${`Connected ${shop} through Shopify OAuth`},
         ${JSON.stringify({ scopes: tokenPayload.scope ?? config.scopes, webhooks: webhookStatus })}::jsonb)
     `;
+    await sql`DELETE FROM shopify_oauth_states WHERE nonce = ${nonce}`;
     return returnToApp(request, "connected");
   } catch {
     return returnToApp(request, "failed");

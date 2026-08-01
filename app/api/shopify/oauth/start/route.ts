@@ -36,5 +36,11 @@ export async function GET(request: Request) {
   authorize.searchParams.set("scope", config.scopes);
   authorize.searchParams.set("redirect_uri", config.redirectUri);
   authorize.searchParams.set("state", state);
-  return Response.redirect(authorize, 302);
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: authorize.toString(),
+      "Set-Cookie": `scrappify_shopify_state=${encodeURIComponent(state)}; Path=/api/shopify/oauth; HttpOnly; Secure; SameSite=Lax; Max-Age=1800`,
+    },
+  });
 }
