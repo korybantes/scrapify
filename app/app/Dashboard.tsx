@@ -896,6 +896,7 @@ export default function Home() {
           <div className="brand"><div className="brand-mark"><i /><i /><i /></div><span>SCRAPPIFY</span></div>
           <button className="mobile-menu-toggle" aria-label={mobileNavOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((current) => !current)}>{mobileNavOpen ? <X size={21} /> : <Menu size={21} />}</button>
         </div>
+        <div className="mobile-sidebar-panel">
         <div className="workspace-label">WORKSPACE</div>
         <button className="workspace-switch" onClick={() => setShowWorkspace(true)}>
           <span className="store-avatar">{account?.workspace.name.slice(0, 2).toUpperCase() || "WS"}</span>
@@ -924,6 +925,7 @@ export default function Home() {
             <span>{account?.user.name.slice(0, 1).toUpperCase() || "A"}</span>
             <i><strong>{account?.user.name || "Account"}</strong><small>{account?.workspace.role || "member"}</small></i>
           </button>
+        </div>
         </div>
       </aside>
 
