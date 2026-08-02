@@ -15,6 +15,7 @@ import {
   Store,
   WandSparkles,
 } from "lucide-react";
+import { LandingMobileMenu } from "./LandingMobileMenu";
 
 const workflow = [
   {
@@ -70,6 +71,7 @@ export default function LandingPage() {
             Start free <ArrowRight size={16} />
           </Link>
         </div>
+        <LandingMobileMenu />
       </nav>
 
       <section className="hero" id="platform">

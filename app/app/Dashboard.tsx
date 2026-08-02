@@ -14,6 +14,7 @@ import {
   FileOutput,
   Globe2,
   LayoutDashboard,
+  Menu,
   Maximize2,
   MoreHorizontal,
   Package,
@@ -263,6 +264,7 @@ export default function Home() {
   const [etaClock, setEtaClock] = useState(0);
   const [showAiTracker, setShowAiTracker] = useState(false);
   const [showAiTrackerDock, setShowAiTrackerDock] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [aiJobId, setAiJobId] = useState("");
   const [shopifyProgress, setShopifyProgress] = useState<{ total: number; completed: number; failed: number } | null>(null);
 
@@ -340,6 +342,13 @@ export default function Home() {
       window.clearInterval(interval);
     };
   }, [loadData]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     const search = new URLSearchParams(window.location.search);
@@ -881,8 +890,12 @@ export default function Home() {
 
   return (
     <main className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><div className="brand-mark"><i /><i /><i /></div><span>SCRAPPIFY</span></div>
+      {mobileNavOpen && <button className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
+      <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`}>
+        <div className="mobile-sidebar-head">
+          <div className="brand"><div className="brand-mark"><i /><i /><i /></div><span>SCRAPPIFY</span></div>
+          <button className="mobile-menu-toggle" aria-label={mobileNavOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((current) => !current)}>{mobileNavOpen ? <X size={21} /> : <Menu size={21} />}</button>
+        </div>
         <div className="workspace-label">WORKSPACE</div>
         <button className="workspace-switch" onClick={() => setShowWorkspace(true)}>
           <span className="store-avatar">{account?.workspace.name.slice(0, 2).toUpperCase() || "WS"}</span>
@@ -895,7 +908,7 @@ export default function Home() {
         <nav>
           <p>OPERATE</p>
           {nav.map(([item, Icon], index) => (
-            <button key={item} className={active === item ? "active" : ""} onClick={() => setActive(item)}>
+            <button key={item} className={active === item ? "active" : ""} onClick={() => { setActive(item); setMobileNavOpen(false); }}>
               <Icon className="nav-icon" size={17} strokeWidth={1.8} />{item}
               {item === "Products" && <em>{data.summary.total_products.toLocaleString()}</em>}
               {item === "Sessions" && sessions.length > 0 && <em>{sessions.length}</em>}
