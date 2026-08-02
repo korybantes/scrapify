@@ -19,16 +19,26 @@ Return only simple Shopify-safe HTML using <p>, <ul>, <li>, and <strong>.
 Write one compact original paragraph and 2-3 short feature bullets.
 Write entirely in ${language}.
 Never mention the source retailer or invent product facts.
-Use a premium, trustworthy tone without exaggerated claims.`;
+Use a premium, trustworthy tone without exaggerated claims.
+Your response MUST begin with <p> and contain only the finished storefront HTML.
+Never output analysis, reasoning, planning, notes, markdown, or commentary.`;
 
 class GroqRateLimitError extends Error {}
 
 function cleanHtml(value: string) {
-  return value
-    .trim()
-    .replace(/^```(?:html)?\s*|\s*```$/gi, "")
+  const withoutThinking = value.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "").replace(/```(?:html)?|```/gi, "");
+  const paragraph = withoutThinking.match(/<p\b[^>]*>[\s\S]*?<\/p>/i);
+  if (!paragraph || paragraph.index === undefined) return "";
+  const afterParagraph = withoutThinking.slice(paragraph.index + paragraph[0].length);
+  const list = afterParagraph.match(/<ul\b[^>]*>[\s\S]*?<\/ul>/i)?.[0] ?? "";
+  if (!list || (list.match(/<li\b/gi)?.length ?? 0) < 2) return "";
+  const cleaned = `${paragraph[0]}${list}`
+    .replace(/<(p|ul|li|strong)\b[^>]*>/gi, "<$1>")
     .replace(/<(?!\/?(?:p|ul|li|strong)\b)[^>]*>/gi, "")
     .trim();
+  const visible = cleaned.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  if (visible.length < 40 || /\b(?:steps?|reasoning|analysis|instructions?|we are writing|let me)\b/i.test(visible)) return "";
+  return cleaned;
 }
 
 async function generateWithGroq(
@@ -47,7 +57,7 @@ async function generateWithGroq(
         { role: "system", content: systemPrompt(language) },
         {
           role: "user",
-          content: `Product: ${product.title}\nBrand: ${product.vendor || "Unknown"}\nCategory: ${product.category || "Unknown"}\nPrice: ${product.sale_price || "Unknown"} TRY`,
+          content: `Product: ${product.title}\nBrand: ${product.vendor || "Unknown"}\nCategory: ${product.category || "Unknown"}\nPrice: ${product.sale_price || "Unknown"} TRY\nBegin immediately with <p>. Output only the finished HTML.`,
         },
       ],
     }),

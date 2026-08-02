@@ -306,7 +306,10 @@ export default function Home() {
           startedAt: new Date(job.started_at || job.created_at).getTime(),
           logs: Array.isArray(job.logs) ? job.logs : [],
         });
-        if (["queued", "running"].includes(job.status)) setShowAiTrackerDock(true);
+        if (["queued", "running"].includes(job.status)) {
+          setShowAiTrackerDock(true);
+          setActive((current) => current === "Overview" ? "AI Studio" : current);
+        }
       }
       setError("");
     } catch (loadError) {
@@ -947,7 +950,7 @@ export default function Home() {
             <div className="loading-state"><span className="spinner dark" /><p>Loading workspace data…</p></div>
           ) : active === "Overview" ? (
             <>
-              <section className={`onboarding-strip ${savedSources.length ? "complete" : ""}`}>
+              {data.summary.total_products === 0 && data.jobs.length === 0 && <section className={`onboarding-strip ${savedSources.length ? "complete" : ""}`}>
                 <div className="onboarding-icon">{savedSources.length ? <Check size={20} /> : <Globe2 size={20} />}</div>
                 <div className="onboarding-copy">
                   <span className="kicker">{savedSources.length ? "SOURCE READY" : "START HERE · STEP 1 OF 4"}</span>
@@ -964,7 +967,7 @@ export default function Home() {
                     </span>
                   ))}
                 </div>
-              </section>
+              </section>}
               <section className="metrics-grid">
                 <Metric label="CATALOG VALUE" value={formatTry(data.summary.catalog_value)} detail="Live price × inventory value" />
                 <Metric label="PRODUCTS" value={data.summary.total_products.toLocaleString()} detail={`${data.summary.warnings} price warnings`} />

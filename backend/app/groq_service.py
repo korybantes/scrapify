@@ -28,12 +28,27 @@ Return only simple Shopify-safe HTML using <p>, <ul>, <li>, and <strong>.
 Write one compact original paragraph and 2-3 short feature bullets, under 120 words total.
 Write entirely in {language_name}.
 Never mention the source retailer or invent product facts.
-Use a premium, trustworthy, sales-focused tone without exaggerated claims."""
+Use a premium, trustworthy, sales-focused tone without exaggerated claims.
+Your response MUST begin with <p> and contain only the finished storefront HTML.
+Never output analysis, reasoning, planning, notes, labels, markdown, or commentary."""
 
 
 def _clean_html(value: str) -> str:
-    cleaned = re.sub(r"^```(?:html)?\s*|\s*```$", "", value.strip(), flags=re.I)
+    value = re.sub(r"<think\b[^>]*>.*?</think>", "", value, flags=re.I | re.S)
+    value = re.sub(r"```(?:html)?|```", "", value, flags=re.I)
+    paragraph = re.search(r"<p\b[^>]*>.*?</p>", value, flags=re.I | re.S)
+    if not paragraph:
+        return ""
+    lists = re.findall(r"<ul\b[^>]*>.*?</ul>", value[paragraph.end():], flags=re.I | re.S)
+    if not lists or len(re.findall(r"<li\b", lists[0], flags=re.I)) < 2:
+        return ""
+    cleaned = paragraph.group(0) + "".join(lists[:1])
+    cleaned = re.sub(r"<(p|ul|li|strong)\b[^>]*>", r"<\1>", cleaned, flags=re.I)
     cleaned = re.sub(r"<(?!/?(?:p|ul|li|strong)\b)[^>]*>", "", cleaned, flags=re.I)
+    visible = re.sub(r"<[^>]+>", " ", cleaned)
+    visible = re.sub(r"\s+", " ", html.unescape(visible)).strip()
+    if len(visible) < 40 or re.search(r"\b(?:steps?|reasoning|analysis|instructions?|we are writing|let me)\b", visible, flags=re.I):
+        return ""
     return cleaned.strip()
 
 
@@ -122,16 +137,22 @@ def enrich_product(product_id: UUID | str, workspace_id: UUID | str, language: s
             f"Price: {product['sale_price'] or 'Unknown'} TRY",
         ]
     )
-    content, provider = _generate(
-        settings,
-        [
+    messages = [
+        {"role": "system", "content": system_prompt(language)},
+        {"role": "user", "content": f"/no_think\n{facts}\nBegin immediately with <p>. Output only the finished HTML."},
+    ]
+    body_html, provider = "", ""
+    for generation_attempt in range(1, 4):
+        content, provider = _generate(settings, messages)
+        body_html = _clean_html(content)
+        if body_html:
+            break
+        messages = [
             {"role": "system", "content": system_prompt(language)},
-            {"role": "user", "content": f"/no_think\n{facts}"},
-        ],
-    )
-    body_html = _clean_html(content)
+            {"role": "user", "content": f"/no_think\n{facts}\nYour previous format was rejected. Start with <p>, add one <ul>, and output nothing else. Attempt {generation_attempt + 1}."},
+        ]
     if not body_html:
-        raise RuntimeError("AI returned an empty description")
+        raise RuntimeError("ScrapifyAI returned reasoning instead of valid storefront HTML")
 
     tags = sorted({item for item in [product["vendor"], product["category"], "parfum"] if item})
     with connection() as conn:
