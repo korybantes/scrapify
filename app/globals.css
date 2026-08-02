@@ -365,6 +365,7 @@ body { -webkit-font-smoothing: antialiased; }
 .ai-live-progress .progress-track { margin: 12px 0 8px; background: #e5e1f6; }
 .ai-live-progress .progress-track i { background: #6658d6; }
 .ai-live-progress p { margin: 0; overflow: hidden; color: #77718c; font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
+.ai-eta-line { margin-top: 9px; display: flex; align-items: center; gap: 5px; color: #7168a3; font-size: 7px; }.ai-eta-line strong { color: #50469f; font-size: 8px; }
 .bulk-modal { width: min(570px,100%); }
 .bulk-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .bulk-form-grid label { display: grid; gap: 6px; color: #5d655e; font-size: 9px; font-weight: 650; }
@@ -399,7 +400,7 @@ body { -webkit-font-smoothing: antialiased; }
 .tracker-status-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 12px; color: #173f33; background: #dff0bd; }.tracker-status-icon.running { color: #5146a5; background: #e9e5ff; }.tracker-status-icon.failed,.tracker-status-icon.cancelled { color: #9a493b; background: #f8dfd9; }
 .tracker-modal-head h2 { margin: 6px 0 3px; font-size: 21px; letter-spacing: -.7px; }.tracker-modal-head p { margin: 0; color: var(--muted); font-size: 8px; }
 .tracker-progress-hero { margin: 24px 0 13px; padding: 21px; border: 1px solid #dfe5d9; border-radius: 12px; background: #f1f7e8; }
-.tracker-progress-hero > div:first-child { display: flex; align-items: baseline; gap: 12px; }.tracker-progress-hero strong { font-size: 34px; letter-spacing: -1.5px; }.tracker-progress-hero span { color: #647269; font-size: 10px; }
+.tracker-progress-hero > div:first-child { display: flex; align-items: baseline; gap: 12px; }.tracker-progress-hero strong { font-size: 34px; letter-spacing: -1.5px; }.tracker-progress-hero span { min-width: 0; flex: 1; color: #647269; font-size: 10px; }.tracker-eta { padding: 7px 9px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid #d9d5ee; border-radius: 8px; color: #5548ae; background: rgba(255,255,255,.72); font-size: 8px; font-style: normal; font-weight: 750; white-space: nowrap; }
 .tracker-progress-hero .progress-track { height: 7px; margin: 15px 0 0; background: #dbe5d1; }.tracker-progress-hero .progress-track i { background: #39745a; }
 .tracker-metrics { display: grid; grid-template-columns: repeat(4,1fr); overflow: hidden; border: 1px solid #e0e4dd; border-radius: 11px; background: #fff; }
 .tracker-metrics > span { min-height: 85px; padding: 16px; display: grid; gap: 10px; border-left: 1px solid #e6e9e3; }.tracker-metrics > span:first-child { border: 0; }
@@ -441,7 +442,7 @@ body { -webkit-font-smoothing: antialiased; }
 .ai-dock-copy > span:first-child b { color: var(--lime); }
 .ai-dock-copy small { overflow: hidden; color: #a6bbb3; font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
 .ai-progress-dock .tracker-mini-meta { display: flex; gap: 12px; color: #a9bcb5; }
-.ai-progress-dock .tracker-mini-meta i { font-size: 7px; font-style: normal; }
+.ai-progress-dock .tracker-mini-meta i { display: inline-flex; align-items: center; gap: 3px; font-size: 7px; font-style: normal; }
 .ai-progress-dock .tracker-expand,.ai-progress-dock .tracker-close { border-color: rgba(255,255,255,.08); }
 .tracker-status-icon.ai { color: #5548ae; background: #e8e4ff; }
 .tracker-status-icon.ai.completed { color: #2e694e; background: #dff0bd; }

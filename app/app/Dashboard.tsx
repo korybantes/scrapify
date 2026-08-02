@@ -209,6 +209,15 @@ const formatTry = (value: string | number | null) =>
 const formatDate = (value: string | null) =>
   value ? new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "—";
 
+const formatDuration = (seconds: number) => {
+  if (seconds < 60) return `~${Math.max(10, Math.ceil(seconds / 10) * 10)} sec`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `~${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `~${hours}h ${remainingMinutes}m` : `~${hours}h`;
+};
+
 export default function Home() {
   const [active, setActive] = useState("Overview");
   const [data, setData] = useState<DashboardData>(emptyData);
@@ -251,6 +260,7 @@ export default function Home() {
   const [selectedSourceId, setSelectedSourceId] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
+  const [etaClock, setEtaClock] = useState(0);
   const [showAiTracker, setShowAiTracker] = useState(false);
   const [showAiTrackerDock, setShowAiTrackerDock] = useState(false);
   const [aiJobId, setAiJobId] = useState("");
@@ -284,6 +294,7 @@ export default function Home() {
       ]);
       if (!dataResponse.ok) throw new Error(payload.error ?? "Could not load live data");
       if (!accountResponse.ok) throw new Error(accountPayload.error ?? "Could not load account");
+      setEtaClock(new Date().getTime());
       setData(payload);
       setAccount(accountPayload);
       setSavedSources(sourcesResponse.ok ? sourcesPayload.sources : []);
@@ -376,6 +387,14 @@ export default function Home() {
     : 0;
   const aiRemaining = aiProgress ? Math.max(0, aiProgress.total - aiProgress.completed) : 0;
   const aiRunActive = aiProgress?.status === "running";
+  const aiElapsedSeconds = aiProgress && etaClock ? Math.max(1, (etaClock - aiProgress.startedAt) / 1000) : 0;
+  const aiAverageSeconds = aiProgress?.completed ? aiElapsedSeconds / aiProgress.completed : 0;
+  const aiEtaSeconds = aiAverageSeconds * aiRemaining;
+  const aiEtaLabel = !aiRunActive
+    ? "Finished"
+    : aiProgress?.completed
+      ? formatDuration(aiEtaSeconds)
+      : "Calculating…";
   const selectedExportSession = sessions.find((session) => session.id === exportSessionId);
   const activeProductSession = sessions.find((session) => session.id === sessionFilter);
   const exportProductCount = exportScope === "selected"
@@ -1087,6 +1106,7 @@ export default function Home() {
                       <div><span><Sparkles size={15} /> {aiProgress.status === "running" ? "Enrichment in progress" : "Enrichment run complete"}</span><strong>{aiProgress.completed}/{aiProgress.total}</strong></div>
                       <div className="progress-track"><i style={{ width: `${aiProgressPercent}%` }} /></div>
                       <p>{aiProgress.status === "running" ? `Writing: ${aiProgress.current}` : aiProgress.failed ? `${aiProgress.failed} products need attention` : "Every selected product is ready"}</p>
+                      <span className="ai-eta-line"><Timer size={12} /> <strong>{aiEtaLabel}</strong> estimated remaining{aiProgress.completed > 0 && aiRunActive ? ` · ${formatDuration(aiAverageSeconds)} per product` : ""}</span>
                       <button className="ai-view-tracker" onClick={() => setShowAiTracker(true)}>View detailed progress <Maximize2 size={12} /></button>
                     </div>
                   )}
@@ -1539,7 +1559,7 @@ export default function Home() {
               <span><strong>{aiProgress.status === "running" ? "Enriching products" : aiProgress.failed ? "Run finished with retries" : "Enrichment complete"}</strong><b>{aiProgressPercent}%</b></span>
               <span className="tracker-bar"><i style={{ width: `${aiProgressPercent}%` }} /></span>
               <small>{aiProgress.status === "running" ? aiProgress.current : aiProgress.failed ? `${aiProgress.failed} products need attention` : "Every queued product is ready"}</small>
-              <span className="tracker-mini-meta"><i>{aiProgress.succeeded} enriched</i><i>{aiRemaining} remaining</i><i>{aiProgress.failed} failed</i></span>
+              <span className="tracker-mini-meta"><i>{aiProgress.succeeded} enriched</i><i>{aiRemaining} remaining</i><i><Timer size={9} /> {aiEtaLabel} ETA</i></span>
             </span>
           </button>
           <button className="tracker-expand" aria-label="Open AI progress tracker" onClick={() => setShowAiTracker(true)}><Maximize2 size={16} /></button>
@@ -1556,13 +1576,13 @@ export default function Home() {
               <span className={`status-badge ${aiProgress.status === "completed" ? "enriched" : aiProgress.status === "running" ? "running" : aiProgress.status === "cancelled" ? "cancelled" : "failed"}`}>{aiProgress.status.replaceAll("_", " ")}</span>
             </div>
             <div className="tracker-progress-hero ai">
-              <div><strong>{aiProgressPercent}%</strong><span>{aiProgress.status === "running" ? `Writing ${aiProgress.current}${aiProgress.attempt > 1 ? ` · attempt ${aiProgress.attempt} of 3` : ""}` : aiProgress.failed ? "Finished; failed items remain clearly marked for another run" : "Every queued product has a finished SEO description"}</span></div>
+              <div><strong>{aiProgressPercent}%</strong><span>{aiProgress.status === "running" ? `Writing ${aiProgress.current}${aiProgress.attempt > 1 ? ` · attempt ${aiProgress.attempt} of 3` : ""}` : aiProgress.failed ? "Finished; failed items remain clearly marked for another run" : "Every queued product has a finished SEO description"}</span><em className="tracker-eta"><Timer size={13} /> {aiEtaLabel} ETA</em></div>
               <div className="progress-track"><i style={{ width: `${aiProgressPercent}%` }} /></div>
             </div>
             <div className="tracker-metrics">
               <span><small>TOTAL QUEUED</small><strong>{aiProgress.total}</strong></span>
               <span><small>ENRICHED</small><strong>{aiProgress.succeeded}</strong></span>
-              <span><small>REMAINING</small><strong>{aiRemaining}</strong></span>
+              <span><small>REMAINING</small><strong>{aiRemaining} <i>{aiRunActive && aiProgress.completed > 0 ? `${formatDuration(aiAverageSeconds)} / product` : aiEtaLabel}</i></strong></span>
               <span><small>FAILED</small><strong>{aiProgress.failed}</strong></span>
             </div>
             <div className="tracker-activity">

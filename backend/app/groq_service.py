@@ -87,8 +87,8 @@ def _ollama_completion(settings, messages: list[dict]) -> str:
                     "keep_alive": "24h",
                     "options": {
                         "temperature": 0.35,
-                        "num_predict": 320,
-                        "num_ctx": 2048,
+                        "num_predict": 240,
+                        "num_ctx": 1536,
                         "num_thread": 4,
                     },
                 },
