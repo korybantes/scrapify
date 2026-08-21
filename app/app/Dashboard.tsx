@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- product image hosts are dynamic workspace source data */
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { authClient } from "@/app/lib/auth-client";
 import {
   Activity,
@@ -261,6 +261,7 @@ export default function Home() {
   const [exportSessionId, setExportSessionId] = useState("");
   const [exportScope, setExportScope] = useState<"ai_ready" | "all" | "selected">("ai_ready");
   const [exportCategory, setExportCategory] = useState("");
+  const [exportCategoryId, setExportCategoryId] = useState("");
   const [exportProductType, setExportProductType] = useState("");
   const [exportCollection, setExportCollection] = useState("");
   const [exportTags, setExportTags] = useState("");
@@ -674,7 +675,7 @@ export default function Home() {
     markNotificationsRead();
   };
 
-  const syncShopifyProducts = async (productIds: string[]) => {
+  const syncShopifyProducts = async (productIds: string[], exportOptions?: { categoryId?: string; productType?: string; extraTags?: string }) => {
     if (!productIds.length) return notify("Select at least one real product first");
     if (!data.services.shopify) return notify("Shopify Admin API is not configured yet");
     setBusyAction("shopify");
@@ -686,7 +687,12 @@ export default function Home() {
         const response = await fetch("/api/shopify/sync", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ product_ids: productIds.slice(index, index + 10) }),
+          body: JSON.stringify({
+            product_ids: productIds.slice(index, index + 10),
+            category_id: exportOptions?.categoryId || "",
+            product_type: exportOptions?.productType || "",
+            extra_tags: exportOptions?.extraTags || "",
+          }),
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error ?? "Shopify sync failed");
@@ -825,7 +831,8 @@ export default function Home() {
 
   const publishGuidedToShopify = async () => {
     if (!data.services.shopify) return setShowShopify(true);
-    if (exportScope === "selected") return syncShopifyProducts(selected);
+    const exportOptions = { categoryId: exportCategoryId, productType: exportProductType.trim(), extraTags: exportTags.trim() };
+    if (exportScope === "selected") return syncShopifyProducts(selected, exportOptions);
     const params = new URLSearchParams();
     if (exportSessionId) params.set("session_id", exportSessionId);
     if (exportScope === "ai_ready") params.set("ai_status", "enriched");
@@ -833,7 +840,7 @@ export default function Home() {
       const response = await fetch(`/api/products/ids?${params}`, { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "Could not prepare Shopify products");
-      await syncShopifyProducts(payload.ids);
+      await syncShopifyProducts(payload.ids, exportOptions);
     } catch (publishError) {
       notify(publishError instanceof Error ? publishError.message : "Could not prepare Shopify products");
     }
@@ -859,7 +866,7 @@ export default function Home() {
       if (exportSessionId) params.set("session_id", exportSessionId);
       params.set("readiness", exportScope);
     }
-    if (exportCategory.trim()) params.set("category", exportCategory.trim());
+    if (exportCategoryId || exportCategory.trim()) params.set("category", exportCategoryId || exportCategory.trim());
     if (exportProductType.trim()) params.set("product_type", exportProductType.trim());
     if (exportCollection.trim()) params.set("collection", exportCollection.trim());
     if (exportTags.trim()) params.set("tags", exportTags.trim());
@@ -1269,8 +1276,7 @@ export default function Home() {
                     <div><h3>Organize products in Shopify</h3><p>Set the taxonomy category Shopify recognizes, plus your own type, collection, and tags.</p></div>
                   </div>
                   <div className="export-mapping-grid">
-                    <label className="full"><span>Shopify product category <em>Standard taxonomy</em></span><input value={exportCategory} onChange={(event) => setExportCategory(event.target.value)} list="shopify-category-suggestions" placeholder="Apparel & Accessories > Shoes > Sneakers" /><small>Use the full English breadcrumb or Shopify category ID. A short value such as &quot;Shoes&quot; may be ignored.</small></label>
-                    <datalist id="shopify-category-suggestions"><option value="Apparel & Accessories > Shoes > Sneakers" /><option value="Health & Beauty > Personal Care > Cosmetics > Perfumes & Colognes" /></datalist>
+                    <label className="full"><span>Shopify product category <em>14,606 official choices</em></span><ShopifyCategoryPicker value={exportCategory} selectedId={exportCategoryId} onChange={(nextValue, nextId) => { setExportCategory(nextValue); setExportCategoryId(nextId); }} /></label>
                     <label><span>Custom product type</span><input value={exportProductType} onChange={(event) => setExportProductType(event.target.value)} placeholder={selectedExportSession?.category_name || "Men's sneakers"} /><small>Your own store-facing classification.</small></label>
                     <label><span>Collection</span><input value={exportCollection} onChange={(event) => setExportCollection(event.target.value)} placeholder={selectedExportSession?.category_name || "Summer collection"} /><small>Creates or assigns one manual collection.</small></label>
                     <label className="full"><span>Additional tags</span><input value={exportTags} onChange={(event) => setExportTags(event.target.value)} placeholder="men, sneakers, premium" /><small>Comma-separated; existing product tags are preserved.</small></label>
@@ -1682,6 +1688,136 @@ function SafeProductImage({ src, alt, fallback }: { src: string; alt: string; fa
     return <span className="product-image-fallback" aria-label={`${alt} image unavailable`}>{fallback}</span>;
   }
   return <img src={src} alt={alt} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
+}
+
+
+type ShopifyTaxonomyResponse = {
+  version: string;
+  categories: Array<[string, string]>;
+};
+
+function normalizeTaxonomySearch(value: string) {
+  return value.toLocaleLowerCase("en-US").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+
+function ShopifyCategoryPicker({
+  value,
+  selectedId,
+  onChange,
+}: {
+  value: string;
+  selectedId: string;
+  onChange: (value: string, id: string) => void;
+}) {
+  const [categories, setCategories] = useState<Array<[string, string]>>([]);
+  const [version, setVersion] = useState("");
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const loadTaxonomy = useCallback(async () => {
+    if (categories.length || loading) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      const response = await fetch("/shopify-taxonomy-2026-05.json", { cache: "force-cache" });
+      if (!response.ok) throw new Error("Could not load Shopify categories");
+      const payload = await response.json() as ShopifyTaxonomyResponse;
+      setCategories(payload.categories);
+      setVersion(payload.version);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Could not load Shopify categories");
+    } finally {
+      setLoading(false);
+    }
+  }, [categories.length, loading]);
+
+  const matches = useMemo(() => {
+    const query = normalizeTaxonomySearch(value);
+    if (!query) return categories.filter(([, breadcrumb]) => !breadcrumb.includes(" > ")).slice(0, 40);
+    const tokens = query.split(/\s+/).filter(Boolean);
+    return categories
+      .map((category) => {
+        const normalized = normalizeTaxonomySearch(category[1]);
+        const leaf = normalized.split(" > ").pop() || normalized;
+        if (!tokens.every((token) => normalized.includes(token))) return null;
+        const score = leaf === query ? 0 : leaf.startsWith(query) ? 1 : normalized.startsWith(query) ? 2 : normalized.includes(` > ${query}`) ? 3 : 4;
+        return { category, score, depth: category[1].split(" > ").length };
+      })
+      .filter((item): item is { category: [string, string]; score: number; depth: number } => Boolean(item))
+      .sort((left, right) => left.score - right.score || left.depth - right.depth || left.category[1].localeCompare(right.category[1]))
+      .slice(0, 80)
+      .map((item) => item.category);
+  }, [categories, value]);
+
+  const selectCategory = (category: [string, string]) => {
+    onChange(category[1], category[0]);
+    setOpen(false);
+  };
+
+  return (
+    <div className="taxonomy-picker" onBlur={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+    }}>
+      <div className={`taxonomy-input ${selectedId ? "selected" : ""}`}>
+        <Search size={15} />
+        <input
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={open}
+          aria-controls="shopify-taxonomy-results"
+          aria-activedescendant={open && matches[activeIndex] ? `taxonomy-${matches[activeIndex][0]}` : undefined}
+          value={value}
+          onFocus={() => { setOpen(true); void loadTaxonomy(); }}
+          onChange={(event) => { onChange(event.target.value, ""); setActiveIndex(0); setOpen(true); void loadTaxonomy(); }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setOpen(true);
+              void loadTaxonomy();
+              setActiveIndex((current) => Math.min(current + 1, Math.max(0, matches.length - 1)));
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setActiveIndex((current) => Math.max(0, current - 1));
+            } else if (event.key === "Enter" && open && matches[activeIndex]) {
+              event.preventDefault();
+              selectCategory(matches[activeIndex]);
+            } else if (event.key === "Escape") {
+              setOpen(false);
+            }
+          }}
+          placeholder="Search all Shopify categories..."
+        />
+        {selectedId ? <button type="button" aria-label="Clear selected Shopify category" onClick={() => { onChange("", ""); setActiveIndex(0); }}><X size={14} /></button> : <ChevronDown size={15} />}
+      </div>
+      {selectedId && <div className="taxonomy-selected"><CheckCircle2 size={13} /><span>Official Shopify category</span><code>{selectedId}</code></div>}
+      {open && (
+        <div className="taxonomy-results" id="shopify-taxonomy-results" role="listbox">
+          <div className="taxonomy-results-head"><span>{value ? `${matches.length} best matches` : "Browse top-level categories"}</span><small>{categories.length ? `${categories.length.toLocaleString()} categories · ${version}` : "Official Shopify taxonomy"}</small></div>
+          {loading ? <div className="taxonomy-message"><RefreshCw className="spin" size={16} /> Loading every Shopify category...</div>
+            : loadError ? <button type="button" className="taxonomy-message error" onClick={() => void loadTaxonomy()}>{loadError} · Try again</button>
+              : matches.length ? matches.map((category, index) => {
+                const parts = category[1].split(" > ");
+                const leaf = parts[parts.length - 1];
+                const parent = parts.slice(0, -1).join(" > ");
+                return <button
+                  type="button"
+                  role="option"
+                  aria-selected={selectedId === category[0]}
+                  id={`taxonomy-${category[0]}`}
+                  className={index === activeIndex ? "active" : ""}
+                  key={category[0]}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onClick={() => selectCategory(category)}
+                ><span><strong>{leaf}</strong><small>{parent || "Top-level category"}</small></span><code>{category[0]}</code>{selectedId === category[0] && <Check size={14} />}</button>;
+              }) : <div className="taxonomy-message">No official category matches that search.</div>}
+        </div>
+      )}
+      <small>Search by any word in the breadcrumb, then select one result. The official category ID is written to Shopify.</small>
+    </div>
+  );
 }
 
 type TableProps = {

@@ -29,7 +29,13 @@ export async function POST(request: Request) {
     const apiVersion = String(integrations[0].api_version);
     const payload = await request.json();
     const ids = Array.isArray(payload.product_ids) ? payload.product_ids.slice(0, 100) : [];
+    const categoryUid = String(payload.category_id || "").trim();
+    const productTypeOverride = String(payload.product_type || "").trim().slice(0, 255);
+    const extraTags = String(payload.extra_tags || "").split(",").map((tag) => tag.trim()).filter(Boolean).slice(0, 250);
     if (!ids.length) return Response.json({ error: "Select at least one product" }, { status: 400 });
+    if (categoryUid && !/^[a-z]{2}(?:-\d+)*$/i.test(categoryUid)) {
+      return Response.json({ error: "Select a valid Shopify taxonomy category" }, { status: 400 });
+    }
     const products = await sql`
       SELECT * FROM products
       WHERE id = ANY(${ids}::uuid[])
@@ -79,6 +85,24 @@ export async function POST(request: Request) {
           }
           return variant;
         });
+        const productInput: Record<string, unknown> = {
+          title: product.title,
+          handle,
+          descriptionHtml: product.body_html,
+          vendor: product.vendor,
+          productType: productTypeOverride || product.category,
+          tags: Array.from(new Set([...(Array.isArray(product.tags) ? product.tags : []), ...extraTags])),
+          status: product.published ? "ACTIVE" : "DRAFT",
+          productOptions: [{
+            name: optionName,
+            values: sourceVariants.map((sourceVariant: Record<string, unknown>) => ({
+              name: String(sourceVariant.option_value || "Default Title"),
+            })),
+          }],
+          variants,
+          files: product.image_url ? [{ originalSource: product.image_url, alt: product.title }] : [],
+        };
+        if (categoryUid) productInput.category = `gid://shopify/TaxonomyCategory/${categoryUid}`;
         const response = await fetch(
           `https://${domain}/admin/api/${apiVersion}/graphql.json`,
           {
@@ -88,23 +112,7 @@ export async function POST(request: Request) {
               query: mutation,
               variables: {
                 identifier: product.shopify_product_id ? { id: product.shopify_product_id } : null,
-                input: {
-                  title: product.title,
-                  handle,
-                  descriptionHtml: product.body_html,
-                  vendor: product.vendor,
-                  productType: product.category,
-                  tags: product.tags,
-                  status: product.published ? "ACTIVE" : "DRAFT",
-                  productOptions: [{
-                    name: optionName,
-                    values: sourceVariants.map((sourceVariant: Record<string, unknown>) => ({
-                      name: String(sourceVariant.option_value || "Default Title"),
-                    })),
-                  }],
-                  variants,
-                  files: product.image_url ? [{ originalSource: product.image_url, alt: product.title }] : [],
-                },
+                input: productInput,
               },
             }),
           },
