@@ -1,8 +1,9 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- product image hosts are dynamic workspace source data */
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { authClient } from "@/app/lib/auth-client";
+import { ExportWorkspace, type ExportConfig } from "@/app/app/ExportWorkspace";
 import {
   Activity,
   Bell,
@@ -260,11 +261,6 @@ export default function Home() {
   const [sessionMigrationRequired, setSessionMigrationRequired] = useState(false);
   const [exportSessionId, setExportSessionId] = useState("");
   const [exportScope, setExportScope] = useState<"ai_ready" | "all" | "selected">("ai_ready");
-  const [exportCategory, setExportCategory] = useState("");
-  const [exportCategoryId, setExportCategoryId] = useState("");
-  const [exportProductType, setExportProductType] = useState("");
-  const [exportCollection, setExportCollection] = useState("");
-  const [exportTags, setExportTags] = useState("");
   const [account, setAccount] = useState<AccountData | null>(null);
   const [shopifyConnection, setShopifyConnection] = useState<ShopifyConnection>({
     configured: false,
@@ -420,13 +416,8 @@ export default function Home() {
     : aiProgress?.completed
       ? formatDuration(aiEtaSeconds)
       : "Calculating…";
-  const selectedExportSession = sessions.find((session) => session.id === exportSessionId);
+
   const activeProductSession = sessions.find((session) => session.id === sessionFilter);
-  const exportProductCount = exportScope === "selected"
-    ? selected.length
-    : exportSessionId
-      ? exportScope === "ai_ready" ? selectedExportSession?.export_ready || 0 : selectedExportSession?.session_products || 0
-      : exportScope === "ai_ready" ? data.summary.ai_enriched : data.summary.total_products;
 
   const createJob = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -675,7 +666,7 @@ export default function Home() {
     markNotificationsRead();
   };
 
-  const syncShopifyProducts = async (productIds: string[], exportOptions?: { categoryId?: string; productType?: string; extraTags?: string }) => {
+  const syncShopifyProducts = async (productIds: string[], exportConfig?: ExportConfig) => {
     if (!productIds.length) return notify("Select at least one real product first");
     if (!data.services.shopify) return notify("Shopify Admin API is not configured yet");
     setBusyAction("shopify");
@@ -689,9 +680,7 @@ export default function Home() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             product_ids: productIds.slice(index, index + 10),
-            category_id: exportOptions?.categoryId || "",
-            product_type: exportOptions?.productType || "",
-            extra_tags: exportOptions?.extraTags || "",
+            export_config: exportConfig || {},
           }),
         });
         const payload = await response.json();
@@ -702,6 +691,7 @@ export default function Home() {
       }
       notify(`${synced} products synced to Shopify${failed ? ` · ${failed} failed` : ""}`);
       await loadData(true);
+      return { synced, failed };
     } catch (shopifyError) {
       notify(shopifyError instanceof Error ? shopifyError.message : "Shopify sync failed");
     } finally {
@@ -829,23 +819,6 @@ export default function Home() {
     }
   };
 
-  const publishGuidedToShopify = async () => {
-    if (!data.services.shopify) return setShowShopify(true);
-    const exportOptions = { categoryId: exportCategoryId, productType: exportProductType.trim(), extraTags: exportTags.trim() };
-    if (exportScope === "selected") return syncShopifyProducts(selected, exportOptions);
-    const params = new URLSearchParams();
-    if (exportSessionId) params.set("session_id", exportSessionId);
-    if (exportScope === "ai_ready") params.set("ai_status", "enriched");
-    try {
-      const response = await fetch(`/api/products/ids?${params}`, { cache: "no-store" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Could not prepare Shopify products");
-      await syncShopifyProducts(payload.ids, exportOptions);
-    } catch (publishError) {
-      notify(publishError instanceof Error ? publishError.message : "Could not prepare Shopify products");
-    }
-  };
-
   const openExportBuilder = () => {
     if (!data.summary.total_products) return notify("There are no real products to export yet");
     if (selected.length) {
@@ -856,23 +829,6 @@ export default function Home() {
     }
     setActive("Exports");
   };
-
-  const downloadGuidedExport = () => {
-    if (!exportProductCount) return notify("No products match this export choice");
-    const params = new URLSearchParams();
-    if (exportScope === "selected") {
-      params.set("ids", selected.join(","));
-    } else {
-      if (exportSessionId) params.set("session_id", exportSessionId);
-      params.set("readiness", exportScope);
-    }
-    if (exportCategoryId || exportCategory.trim()) params.set("category", exportCategoryId || exportCategory.trim());
-    if (exportProductType.trim()) params.set("product_type", exportProductType.trim());
-    if (exportCollection.trim()) params.set("collection", exportCollection.trim());
-    if (exportTags.trim()) params.set("tags", exportTags.trim());
-    window.location.href = `/api/export?${params}`;
-  };
-
   const reviewSession = (session: ScrapeSession) => {
     setSessionFilter(session.id);
     setSelected([]);
@@ -1234,70 +1190,21 @@ export default function Home() {
               </div>
             </section>
           ) : active === "Exports" ? (
-            <section className="guided-export-page">
-              <div className="guided-export-head">
-                <div><span className="kicker">GUIDED SHOPIFY EXPORT</span><h2>Choose what to export. We handle the rest.</h2><p>Create a clean Shopify CSV from one scrape session or your complete workspace—without spreadsheets or guesswork.</p></div>
-                <span className="export-format-pill"><FileOutput size={16} /> Shopify CSV</span>
-              </div>
-              <div className="guided-export-grid">
-                <article className="panel export-builder">
-                  <div className="export-step">
-                    <span className="export-step-number">1</span>
-                    <div><h3>Which collection?</h3><p>Choose a scrape session, or include the whole workspace.</p></div>
-                  </div>
-                  <label className="export-session-select">
-                    <select value={exportSessionId} onChange={(event) => { setExportSessionId(event.target.value); setExportScope("ai_ready"); }}>
-                      <option value="">All workspace products</option>
-                      {sessions.map((session) => <option key={session.id} value={session.id}>{session.category_name} · {new Date(session.created_at).toLocaleDateString()} · {session.session_products} products</option>)}
-                    </select>
-                    <ChevronDown size={16} />
-                  </label>
-
-                  <div className="export-divider" />
-                  <div className="export-step">
-                    <span className="export-step-number">2</span>
-                    <div><h3>What should be included?</h3><p>The recommended option exports only polished, AI-ready products.</p></div>
-                  </div>
-                  <div className="export-choice-list">
-                    <button className={exportScope === "ai_ready" ? "active" : ""} onClick={() => setExportScope("ai_ready")}>
-                      <span className="export-choice-icon ready"><Sparkles size={17} /></span><span><strong>AI-ready products</strong><small>Descriptions completed and ready for Shopify</small></span><em>Recommended</em><i>{exportSessionId ? selectedExportSession?.export_ready || 0 : data.summary.ai_enriched}</i>
-                    </button>
-                    <button className={exportScope === "all" ? "active" : ""} onClick={() => setExportScope("all")}>
-                      <span className="export-choice-icon"><Package size={17} /></span><span><strong>All collected products</strong><small>Includes pending and failed AI items</small></span><i>{exportSessionId ? selectedExportSession?.session_products || 0 : data.summary.total_products}</i>
-                    </button>
-                    <button className={exportScope === "selected" ? "active" : ""} disabled={!selected.length} onClick={() => setExportScope("selected")}>
-                      <span className="export-choice-icon"><Check size={17} /></span><span><strong>My selected products</strong><small>{selected.length ? "Your current selection from Products" : "Select products first to use this option"}</small></span><i>{selected.length}</i>
-                    </button>
-                  </div>
-
-                  <div className="export-divider" />
-                  <div className="export-step">
-                    <span className="export-step-number">3</span>
-                    <div><h3>Organize products in Shopify</h3><p>Set the taxonomy category Shopify recognizes, plus your own type, collection, and tags.</p></div>
-                  </div>
-                  <div className="export-mapping-grid">
-                    <label className="full"><span>Shopify product category <em>14,606 official choices</em></span><ShopifyCategoryPicker value={exportCategory} selectedId={exportCategoryId} onChange={(nextValue, nextId) => { setExportCategory(nextValue); setExportCategoryId(nextId); }} /></label>
-                    <label><span>Custom product type</span><input value={exportProductType} onChange={(event) => setExportProductType(event.target.value)} placeholder={selectedExportSession?.category_name || "Men's sneakers"} /><small>Your own store-facing classification.</small></label>
-                    <label><span>Collection</span><input value={exportCollection} onChange={(event) => setExportCollection(event.target.value)} placeholder={selectedExportSession?.category_name || "Summer collection"} /><small>Creates or assigns one manual collection.</small></label>
-                    <label className="full"><span>Additional tags</span><input value={exportTags} onChange={(event) => setExportTags(event.target.value)} placeholder="men, sneakers, premium" /><small>Comma-separated; existing product tags are preserved.</small></label>
-                  </div>
-                </article>
-
-                <aside className="panel export-receipt">
-                  <div className="export-receipt-icon"><FileOutput size={25} /></div>
-                  <span className="kicker">YOUR EXPORT</span>
-                  <h3>{selectedExportSession?.category_name || "Complete workspace"}</h3>
-                  <p>{exportScope === "ai_ready" ? "Only products with completed AI descriptions" : exportScope === "selected" ? "Only your manually selected products" : "Every collected product, regardless of AI status"}</p>
-                  <div className="export-count"><strong>{exportProductCount.toLocaleString()}</strong><span>products will be exported</span></div>
-                  <div className="export-organization-summary"><span><small>PRODUCT CATEGORY</small><strong>{exportCategory || "Uses each product's current value"}</strong></span><span><small>TYPE / COLLECTION</small><strong>{[exportProductType, exportCollection].filter(Boolean).join(" · ") || "Uses product defaults"}</strong></span></div>
-                  <ul><li><Check size={13} /> Shopify category, type and collection columns</li><li><Check size={13} /> Product titles, pricing and variant inventory</li><li><Check size={13} /> Images, tags and explicit SEO fields</li></ul>
-                  {shopifyProgress && busyAction === "shopify" && <div className="shopify-publish-progress"><div><span>Publishing to Shopify</span><strong>{shopifyProgress.completed}/{shopifyProgress.total}</strong></div><div className="progress-track"><i style={{ width: `${Math.round((shopifyProgress.completed / shopifyProgress.total) * 100)}%` }} /></div><small>{shopifyProgress.failed ? `${shopifyProgress.failed} need attention` : "Creating products securely"}</small></div>}
-                  <button className="shopify-publish-button wide" disabled={!exportProductCount || busyAction === "shopify"} onClick={() => void publishGuidedToShopify()}><ShoppingBag size={15} /> {data.services.shopify ? busyAction === "shopify" ? "Publishing…" : "Publish directly to Shopify" : "Connect Shopify to publish"}</button>
-                  <button className="primary-button wide" disabled={!exportProductCount} onClick={downloadGuidedExport}><Download size={15} /> Download Shopify CSV</button>
-                  <small>Publish directly or download a live backup from your current catalog.</small>
-                </aside>
-              </div>
-            </section>
+            <ExportWorkspace
+              sessions={sessions}
+              summary={data.summary}
+              selected={selected}
+              sessionId={exportSessionId}
+              setSessionId={setExportSessionId}
+              scope={exportScope}
+              setScope={setExportScope}
+              shopifyReady={data.services.shopify}
+              busyAction={busyAction}
+              shopifyProgress={shopifyProgress}
+              onPublish={syncShopifyProducts}
+              onConnect={() => setShowShopify(true)}
+              notify={notify}
+            />
           ) : active === "Sources" ? (
             <section className="sources-page">
               <article className="panel source-intro">
@@ -1690,135 +1597,6 @@ function SafeProductImage({ src, alt, fallback }: { src: string; alt: string; fa
   return <img src={src} alt={alt} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
 }
 
-
-type ShopifyTaxonomyResponse = {
-  version: string;
-  categories: Array<[string, string]>;
-};
-
-function normalizeTaxonomySearch(value: string) {
-  return value.toLocaleLowerCase("en-US").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").trim();
-}
-
-function ShopifyCategoryPicker({
-  value,
-  selectedId,
-  onChange,
-}: {
-  value: string;
-  selectedId: string;
-  onChange: (value: string, id: string) => void;
-}) {
-  const [categories, setCategories] = useState<Array<[string, string]>>([]);
-  const [version, setVersion] = useState("");
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState("");
-  const [activeIndex, setActiveIndex] = useState(0);
-
-  const loadTaxonomy = useCallback(async () => {
-    if (categories.length || loading) return;
-    setLoading(true);
-    setLoadError("");
-    try {
-      const response = await fetch("/shopify-taxonomy-2026-05.json", { cache: "force-cache" });
-      if (!response.ok) throw new Error("Could not load Shopify categories");
-      const payload = await response.json() as ShopifyTaxonomyResponse;
-      setCategories(payload.categories);
-      setVersion(payload.version);
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Could not load Shopify categories");
-    } finally {
-      setLoading(false);
-    }
-  }, [categories.length, loading]);
-
-  const matches = useMemo(() => {
-    const query = normalizeTaxonomySearch(value);
-    if (!query) return categories.filter(([, breadcrumb]) => !breadcrumb.includes(" > ")).slice(0, 40);
-    const tokens = query.split(/\s+/).filter(Boolean);
-    return categories
-      .map((category) => {
-        const normalized = normalizeTaxonomySearch(category[1]);
-        const leaf = normalized.split(" > ").pop() || normalized;
-        if (!tokens.every((token) => normalized.includes(token))) return null;
-        const score = leaf === query ? 0 : leaf.startsWith(query) ? 1 : normalized.startsWith(query) ? 2 : normalized.includes(` > ${query}`) ? 3 : 4;
-        return { category, score, depth: category[1].split(" > ").length };
-      })
-      .filter((item): item is { category: [string, string]; score: number; depth: number } => Boolean(item))
-      .sort((left, right) => left.score - right.score || left.depth - right.depth || left.category[1].localeCompare(right.category[1]))
-      .slice(0, 80)
-      .map((item) => item.category);
-  }, [categories, value]);
-
-  const selectCategory = (category: [string, string]) => {
-    onChange(category[1], category[0]);
-    setOpen(false);
-  };
-
-  return (
-    <div className="taxonomy-picker" onBlur={(event) => {
-      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
-    }}>
-      <div className={`taxonomy-input ${selectedId ? "selected" : ""}`}>
-        <Search size={15} />
-        <input
-          role="combobox"
-          aria-autocomplete="list"
-          aria-expanded={open}
-          aria-controls="shopify-taxonomy-results"
-          aria-activedescendant={open && matches[activeIndex] ? `taxonomy-${matches[activeIndex][0]}` : undefined}
-          value={value}
-          onFocus={() => { setOpen(true); void loadTaxonomy(); }}
-          onChange={(event) => { onChange(event.target.value, ""); setActiveIndex(0); setOpen(true); void loadTaxonomy(); }}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowDown") {
-              event.preventDefault();
-              setOpen(true);
-              void loadTaxonomy();
-              setActiveIndex((current) => Math.min(current + 1, Math.max(0, matches.length - 1)));
-            } else if (event.key === "ArrowUp") {
-              event.preventDefault();
-              setActiveIndex((current) => Math.max(0, current - 1));
-            } else if (event.key === "Enter" && open && matches[activeIndex]) {
-              event.preventDefault();
-              selectCategory(matches[activeIndex]);
-            } else if (event.key === "Escape") {
-              setOpen(false);
-            }
-          }}
-          placeholder="Search all Shopify categories..."
-        />
-        {selectedId ? <button type="button" aria-label="Clear selected Shopify category" onClick={() => { onChange("", ""); setActiveIndex(0); }}><X size={14} /></button> : <ChevronDown size={15} />}
-      </div>
-      {selectedId && <div className="taxonomy-selected"><CheckCircle2 size={13} /><span>Official Shopify category</span><code>{selectedId}</code></div>}
-      {open && (
-        <div className="taxonomy-results" id="shopify-taxonomy-results" role="listbox">
-          <div className="taxonomy-results-head"><span>{value ? `${matches.length} best matches` : "Browse top-level categories"}</span><small>{categories.length ? `${categories.length.toLocaleString()} categories · ${version}` : "Official Shopify taxonomy"}</small></div>
-          {loading ? <div className="taxonomy-message"><RefreshCw className="spin" size={16} /> Loading every Shopify category...</div>
-            : loadError ? <button type="button" className="taxonomy-message error" onClick={() => void loadTaxonomy()}>{loadError} · Try again</button>
-              : matches.length ? matches.map((category, index) => {
-                const parts = category[1].split(" > ");
-                const leaf = parts[parts.length - 1];
-                const parent = parts.slice(0, -1).join(" > ");
-                return <button
-                  type="button"
-                  role="option"
-                  aria-selected={selectedId === category[0]}
-                  id={`taxonomy-${category[0]}`}
-                  className={index === activeIndex ? "active" : ""}
-                  key={category[0]}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  onClick={() => selectCategory(category)}
-                ><span><strong>{leaf}</strong><small>{parent || "Top-level category"}</small></span><code>{category[0]}</code>{selectedId === category[0] && <Check size={14} />}</button>;
-              }) : <div className="taxonomy-message">No official category matches that search.</div>}
-        </div>
-      )}
-      <small>Search by any word in the breadcrumb, then select one result. The official category ID is written to Shopify.</small>
-    </div>
-  );
-}
 
 type TableProps = {
   products: Product[];

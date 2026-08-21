@@ -51,3 +51,19 @@ class IdList(BaseModel):
     workspace_id: UUID
     product_ids: list[UUID] = Field(min_length=1, max_length=250)
     language: str = Field(default="tr", pattern="^(tr|en|de|fr|es|pl|ar|it)$")
+
+class CategorySuggestionProduct(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    vendor: str = Field(default="", max_length=250)
+    category: str = Field(default="", max_length=250)
+
+
+class CategorySuggestionCandidate(BaseModel):
+    id: str = Field(pattern=r"^[a-z]{2}(?:-\d+)*$")
+    breadcrumb: str = Field(min_length=2, max_length=500)
+    score: float = 0
+
+
+class CategorySuggestionRequest(BaseModel):
+    products: list[CategorySuggestionProduct] = Field(min_length=1, max_length=20)
+    candidates: list[CategorySuggestionCandidate] = Field(min_length=1, max_length=50)

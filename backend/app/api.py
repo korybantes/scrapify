@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .db import close_pool, connection, migrate, open_pool
-from .groq_service import enrich_many
-from .schemas import IdList, JobCreate, ProductPatch
+from .groq_service import enrich_many, suggest_category
+from .schemas import CategorySuggestionRequest, IdList, JobCreate, ProductPatch
 from .security import require_api_key
 from .shopify_service import sync_product
 
@@ -231,6 +231,14 @@ def patch_product(
 @app.post("/v1/ai/enrich", dependencies=[Depends(require_api_key)])
 def ai_enrich(payload: IdList):
     return enrich_many(payload.product_ids, payload.workspace_id, payload.language)
+
+
+@app.post("/v1/ai/category-suggest", dependencies=[Depends(require_api_key)])
+def ai_category_suggest(payload: CategorySuggestionRequest):
+    return suggest_category(
+        [product.model_dump() for product in payload.products],
+        [candidate.model_dump() for candidate in payload.candidates],
+    )
 
 
 @app.post("/v1/shopify/sync", dependencies=[Depends(require_api_key)])

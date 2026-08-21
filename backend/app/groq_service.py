@@ -1,4 +1,5 @@
 import html
+import json
 import re
 import time
 from uuid import UUID
@@ -194,3 +195,41 @@ def enrich_many(product_ids: list[UUID], workspace_id: UUID, language: str = "tr
                 )
                 conn.commit()
     return {"enriched": enriched, "failed": failed}
+
+def suggest_category(products: list[dict], candidates: list[dict]) -> dict:
+    settings = get_settings()
+    allowed = {candidate["id"]: candidate for candidate in candidates}
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Choose exactly one Shopify taxonomy candidate for these products. "
+                "Return JSON only with id, confidence from 0 to 100, and a short reason. "
+                "Never invent an ID. Do not output reasoning or markdown."
+            ),
+        },
+        {
+            "role": "user",
+            "content": "/no_think\n" + json.dumps(
+                {"products": products, "candidates": candidates},
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    content, provider = _generate(settings, messages)
+    content = re.sub(r"<think\b[^>]*>.*?</think>", "", content, flags=re.I | re.S)
+    content = re.sub(r"```(?:json)?|```", "", content, flags=re.I).strip()
+    match = re.search(r"\{.*\}", content, flags=re.S)
+    if not match:
+        raise RuntimeError("ScrapifyAI returned an invalid category response")
+    result = json.loads(match.group(0))
+    candidate = allowed.get(str(result.get("id", "")))
+    if not candidate:
+        raise RuntimeError("ScrapifyAI selected an unknown category")
+    return {
+        "id": candidate["id"],
+        "breadcrumb": candidate["breadcrumb"],
+        "confidence": max(0, min(100, int(result.get("confidence", 75)))),
+        "reason": str(result.get("reason", "Best match for this selection"))[:240],
+        "provider": provider,
+    }
