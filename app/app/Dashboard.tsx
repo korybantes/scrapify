@@ -30,6 +30,16 @@ import {
   X,
 } from "lucide-react";
 
+type ProductVariant = {
+  source_variant_id: string;
+  option_name: string;
+  option_value: string;
+  sku: string;
+  barcode: string;
+  inventory_qty: number;
+  available: boolean;
+};
+
 type Product = {
   id: string;
   title: string;
@@ -43,6 +53,7 @@ type Product = {
   tags: string[];
   published: boolean;
   inventory_qty: number;
+  variants: ProductVariant[];
   price_warning: string | null;
   ai_status: "pending" | "enriched" | "failed" | "skipped";
   ai_error: string | null;
@@ -1539,6 +1550,18 @@ export default function Home() {
             <button type="button" className="drawer-close" aria-label="Close product editor" onClick={() => setDrawer(null)}><X size={18} /></button>
             <div className="drawer-product-art"><SafeProductImage src={drawer.image_url} alt={drawer.title} fallback={drawer.vendor.slice(0, 1) || "P"} /></div>
             <span className="kicker">WORKSPACE PRODUCT</span><h2>{drawer.title}</h2><p>{drawer.source} · Updated {formatDate(drawer.updated_at)}</p>
+            {Array.isArray(drawer.variants) && drawer.variants.length > 0 && (
+              <section className="product-variants-card">
+                <div><span><Boxes size={15} /><strong>{drawer.variants.length} source variants</strong></span><small>{drawer.inventory_qty} total units - refreshed from Beymen</small></div>
+                <div className="variant-chip-grid">
+                  {drawer.variants.map((variant) => (
+                    <span className={variant.available ? "available" : "sold-out"} key={variant.source_variant_id || variant.option_value}>
+                      <strong>{variant.option_value}</strong><small>{variant.inventory_qty > 0 ? `${variant.inventory_qty} in stock` : "Sold out"}</small>
+                    </span>
+                  ))}
+                </div>
+              </section>
+            )}
             <div className="drawer-fields">
               <label className="full">Shopify title<input name="title" defaultValue={drawer.title} /></label>
               <label>Vendor<input name="vendor" defaultValue={drawer.vendor} /></label>
@@ -1696,7 +1719,7 @@ function ProductTable({ products, selected, setSelected, openProduct, openBulkEd
               <td><button className="product-cell" onClick={() => openProduct(product)}><ProductThumb product={product} /><span><strong>{product.title}</strong><small>{product.vendor || "Unknown vendor"}</small></span></button></td>
               <td><span className="source-badge"><i />{product.source}</span></td>
               <td><strong>{formatTry(product.sale_price)}</strong>{product.compare_at_price && <small className="compare">{formatTry(product.compare_at_price)}</small>}</td>
-              <td><span>{product.inventory_qty} units</span></td>
+              <td><span>{Array.isArray(product.variants) && product.variants.length ? `${product.variants.length} sizes / ${product.inventory_qty} units` : `${product.inventory_qty} units`}</span></td>
               <td><span className={`status-badge ${product.ai_status}`}>{product.ai_status === "enriched" ? "✦ " : ""}{product.ai_status}</span></td>
               <td><span className="shopify-state"><i />{product.shopify_status.replace("_", " ")}</span></td>
               <td><button className="row-menu" aria-label={`Edit ${product.title}`} onClick={() => openProduct(product)}><MoreHorizontal size={17} /></button></td>

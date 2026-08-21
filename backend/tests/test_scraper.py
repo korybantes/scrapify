@@ -4,7 +4,7 @@ from decimal import Decimal
 
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
 
-from app.scraper import parse_price
+from app.scraper import _beymen_product_id, _normalize_beymen_summary, parse_price
 
 
 class ParsePriceTests(unittest.TestCase):
@@ -34,6 +34,29 @@ class ParsePriceTests(unittest.TestCase):
             parse_price("1000000000000 TL"),
             (None, "Price exceeds the database storage limit"),
         )
+
+
+class BeymenVariantTests(unittest.TestCase):
+    def test_extracts_product_id(self):
+        self.assertEqual(
+            _beymen_product_id("https://www.beymen.com/tr/p_valentino-shoe_1861592"),
+            1861592,
+        )
+
+    def test_normalizes_real_size_stock(self):
+        summary = _normalize_beymen_summary({"result": {
+            "variant": "Beden",
+            "stockQuantity": 5,
+            "sizes": [
+                {"variantId": 1, "sizeName": "40", "variantCode": "SKU40", "variantBarcode": "BC40", "stockQuantity": 3, "inStock": True},
+                {"variantId": 2, "sizeName": "41", "variantCode": "SKU41", "variantBarcode": "BC41", "stockQuantity": 0, "inStock": False},
+            ],
+        }})
+        self.assertTrue(summary["loaded"])
+        self.assertEqual(summary["inventory_qty"], 3)
+        self.assertEqual(summary["variants"][0]["option_value"], "40")
+        self.assertEqual(summary["variants"][0]["sku"], "SKU40")
+        self.assertFalse(summary["variants"][1]["available"])
 
 
 if __name__ == "__main__":

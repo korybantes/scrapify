@@ -44,6 +44,7 @@ PRICE_TOKEN_PATTERN = re.compile(
     r"|\d+"
     r")(?!\d)"
 )
+BEYMEN_PRODUCT_ID_PATTERN = re.compile(r"_(\d+)(?:[/?#]|$)")
 
 
 def parse_price(raw: str | None) -> tuple[Decimal | None, str | None]:
@@ -197,16 +198,85 @@ def _extract_product(card, source: str, category: str) -> dict | None:
     }
 
 
+def _beymen_product_id(product_url: str) -> int | None:
+    match = BEYMEN_PRODUCT_ID_PATTERN.search(product_url)
+    return int(match.group(1)) if match else None
+
+
+def _normalize_beymen_summary(payload: dict | None) -> dict:
+    result = (payload or {}).get("result") or {}
+    option_name = str(result.get("variant") or "Beden").strip()
+    variants = []
+    for size in result.get("sizes") or []:
+        option_value = str(size.get("sizeName") or "").strip()
+        if not option_value:
+            continue
+        try:
+            inventory_qty = max(0, int(size.get("stockQuantity") or 0))
+        except (TypeError, ValueError):
+            inventory_qty = 0
+        variants.append({
+            "source_variant_id": str(size.get("variantId") or ""),
+            "option_name": option_name,
+            "option_value": option_value,
+            "sku": str(size.get("variantCode") or ""),
+            "barcode": str(size.get("variantBarcode") or ""),
+            "inventory_qty": inventory_qty,
+            "available": bool(size.get("inStock")) and inventory_qty > 0,
+        })
+    try:
+        aggregate_inventory = max(0, int(result.get("stockQuantity") or 0))
+    except (TypeError, ValueError):
+        aggregate_inventory = 0
+    if variants:
+        aggregate_inventory = sum(variant["inventory_qty"] for variant in variants)
+    return {
+        "loaded": bool(result),
+        "variants": variants,
+        "inventory_qty": aggregate_inventory,
+        "option_name": option_name,
+    }
+
+
+def _load_beymen_summaries(page: Page, product_ids: list[int]) -> dict[str, dict]:
+    if not product_ids:
+        return {}
+    return page.evaluate(
+        """async (ids) => {
+          const results = {};
+          let cursor = 0;
+          async function worker() {
+            while (cursor < ids.length) {
+              const id = ids[cursor++];
+              try {
+                const response = await fetch(`/sf-api/api/product/${id}/productsummary`, {
+                  method: "POST",
+                  credentials: "same-origin",
+                  headers: { "Content-Type": "application/json" },
+                  body: "{}",
+                });
+                if (response.ok) results[String(id)] = await response.json();
+              } catch (_) {}
+            }
+          }
+          await Promise.all(Array.from({ length: Math.min(6, ids.length) }, worker));
+          return results;
+        }""",
+        product_ids,
+    )
+
+
 def _upsert_product(product: dict, workspace_id: UUID, job_id: UUID) -> UUID:
     with connection() as conn:
         row = conn.execute(
             """INSERT INTO products (
                  workspace_id, source, source_product_url, title, vendor, category,
-                 sale_price, compare_at_price, image_url, price_warning, raw_data
+                 sale_price, compare_at_price, image_url, price_warning, raw_data,
+                 variants, inventory_qty
                ) VALUES (
                  %(workspace_id)s, %(source)s, %(source_product_url)s, %(title)s, %(vendor)s, %(category)s,
                  %(sale_price)s, %(compare_at_price)s, %(image_url)s, %(price_warning)s,
-                 %(raw_data)s::jsonb
+                 %(raw_data)s::jsonb, %(variants)s::jsonb, %(inventory_qty)s
                )
                ON CONFLICT (workspace_id, source, source_product_url) DO UPDATE SET
                  title = EXCLUDED.title,
@@ -217,6 +287,8 @@ def _upsert_product(product: dict, workspace_id: UUID, job_id: UUID) -> UUID:
                  image_url = EXCLUDED.image_url,
                  price_warning = EXCLUDED.price_warning,
                  raw_data = EXCLUDED.raw_data,
+                 variants = CASE WHEN %(variants_loaded)s THEN EXCLUDED.variants ELSE products.variants END,
+                 inventory_qty = CASE WHEN %(variants_loaded)s THEN EXCLUDED.inventory_qty ELSE products.inventory_qty END,
                  last_seen_at = now(),
                  updated_at = now()
                RETURNING id""",
@@ -224,6 +296,9 @@ def _upsert_product(product: dict, workspace_id: UUID, job_id: UUID) -> UUID:
                 **product,
                 "workspace_id": workspace_id,
                 "raw_data": __import__("json").dumps(product["raw_data"], ensure_ascii=False),
+                "variants": __import__("json").dumps(product.get("variants") or [], ensure_ascii=False),
+                "inventory_qty": product.get("inventory_qty", 0),
+                "variants_loaded": bool(product.get("variants_loaded")),
             },
         ).fetchone()
         conn.execute(
@@ -303,18 +378,42 @@ def run_scrape_job(job: dict) -> None:
                 break
             _log(job_id, workspace_id, f"Found {len(cards)} cards with {matched_selector}")
 
-            page_product_ids: list[UUID] = []
+            extracted_products: list[dict] = []
             for card in cards:
                 try:
                     product = _extract_product(card, source_host, job["category_name"])
                     if not product:
                         continue
+                    extracted_products.append(product)
+                except Exception as exc:
+                    _log(job_id, workspace_id, f"Skipped one product card: {exc}", "warning")
+
+            beymen_ids = [
+                product_id for product in extracted_products
+                if (product_id := _beymen_product_id(product["source_product_url"])) is not None
+            ] if source_host.endswith("beymen.com") else []
+            summaries = _load_beymen_summaries(page, list(dict.fromkeys(beymen_ids)))
+            variant_products = 0
+            page_product_ids: list[UUID] = []
+            for product in extracted_products:
+                try:
+                    source_product_id = _beymen_product_id(product["source_product_url"])
+                    summary = _normalize_beymen_summary(summaries.get(str(source_product_id))) if source_product_id else {"loaded": False}
+                    product["variants_loaded"] = bool(summary.get("loaded"))
+                    if product["variants_loaded"]:
+                        product["variants"] = summary["variants"]
+                        product["inventory_qty"] = summary["inventory_qty"]
+                        product["raw_data"]["variants"] = summary["variants"]
+                        product["raw_data"]["variant_option_name"] = summary["option_name"]
+                        variant_products += int(bool(summary["variants"]))
                     product_id = _upsert_product(product, workspace_id, job_id)
                     page_product_ids.append(product_id)
                     found += 1
                     warnings += int(bool(product["price_warning"]))
                 except Exception as exc:
-                    _log(job_id, workspace_id, f"Skipped one product card: {exc}", "warning")
+                    _log(job_id, workspace_id, f"Could not save one product: {exc}", "warning")
+            if beymen_ids:
+                _log(job_id, workspace_id, f"Loaded real size and stock variants for {variant_products} products")
 
             progress = int(((page_index + 1) / job["max_pages"]) * 100)
             with connection() as conn:

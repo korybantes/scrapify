@@ -53,15 +53,32 @@ export async function POST(request: Request) {
     for (const product of products) {
       try {
         const handle = slugify(product.title) || `scrappify-${product.id}`;
-        const variant: Record<string, unknown> = {
-          optionValues: [{ optionName: "Title", name: "Default Title" }],
-          price: String(product.sale_price ?? "0.00"),
-          inventoryItem: { sku: String(product.id), tracked: true },
-        };
-        if (locationId) variant.inventoryQuantities = [{ locationId, name: "available", quantity: Number(product.inventory_qty || 0) }];
-        if (product.compare_at_price && Number(product.compare_at_price) > Number(product.sale_price ?? 0)) {
-          variant.compareAtPrice = String(product.compare_at_price);
-        }
+        const storedVariants = Array.isArray(product.variants) ? product.variants : [];
+        const sourceVariants = storedVariants.length ? storedVariants : [{
+          option_name: "Title",
+          option_value: "Default Title",
+          sku: String(product.id),
+          barcode: "",
+          inventory_qty: Number(product.inventory_qty || 0),
+        }];
+        const optionName = String(sourceVariants[0].option_name || "Title");
+        const variants = sourceVariants.map((sourceVariant: Record<string, unknown>) => {
+          const variant: Record<string, unknown> = {
+            optionValues: [{ optionName, name: String(sourceVariant.option_value || "Default Title") }],
+            price: String(product.sale_price ?? "0.00"),
+            inventoryItem: { sku: String(sourceVariant.sku || product.id), tracked: true },
+          };
+          if (sourceVariant.barcode) variant.barcode = String(sourceVariant.barcode);
+          if (locationId) variant.inventoryQuantities = [{
+            locationId,
+            name: "available",
+            quantity: Number(sourceVariant.inventory_qty || 0),
+          }];
+          if (product.compare_at_price && Number(product.compare_at_price) > Number(product.sale_price ?? 0)) {
+            variant.compareAtPrice = String(product.compare_at_price);
+          }
+          return variant;
+        });
         const response = await fetch(
           `https://${domain}/admin/api/${apiVersion}/graphql.json`,
           {
@@ -79,8 +96,13 @@ export async function POST(request: Request) {
                   productType: product.category,
                   tags: product.tags,
                   status: product.published ? "ACTIVE" : "DRAFT",
-                  productOptions: [{ name: "Title", values: [{ name: "Default Title" }] }],
-                  variants: [variant],
+                  productOptions: [{
+                    name: optionName,
+                    values: sourceVariants.map((sourceVariant: Record<string, unknown>) => ({
+                      name: String(sourceVariant.option_value || "Default Title"),
+                    })),
+                  }],
+                  variants,
                   files: product.image_url ? [{ originalSource: product.image_url, alt: product.title }] : [],
                 },
               },

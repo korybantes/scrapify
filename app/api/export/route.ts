@@ -4,7 +4,7 @@ import { requireWorkspace } from "@/app/lib/workspace";
 const columns = [
   "Handle", "Title", "Body (HTML)", "Vendor", "Product Category", "Type",
   "Tags", "Published", "Option1 Name", "Option1 Value", "Variant SKU",
-  "Variant Price", "Variant Compare At Price", "Variant Inventory Qty",
+  "Variant Barcode", "Variant Price", "Variant Compare At Price", "Variant Inventory Qty",
   "Variant Inventory Policy", "Variant Fulfillment Service",
   "Variant Requires Shipping", "Variant Taxable", "Image Src",
   "Image Position", "Image Alt Text", "Status",
@@ -63,30 +63,41 @@ export async function GET(request: Request) {
             AND (${readiness} <> 'needs_ai' OR ai_status IN ('pending', 'failed'))
           ORDER BY updated_at DESC
         `;
-    const rows = products.map((product) => [
-      slugify(product.title),
-      product.title,
-      product.body_html,
-      product.vendor,
-      product.category,
-      product.category,
-      product.tags.join(","),
-      product.published ? "TRUE" : "FALSE",
-      "Title",
-      "Default Title",
-      product.id,
-      product.sale_price,
-      product.compare_at_price,
-      product.inventory_qty,
-      "deny",
-      "manual",
-      "TRUE",
-      "TRUE",
-      product.image_url,
-      "1",
-      product.title,
-      product.published ? "active" : "draft",
-    ].map(escapeCsv).join(","));
+    const rows = products.flatMap((product) => {
+      const storedVariants = Array.isArray(product.variants) ? product.variants : [];
+      const variants = storedVariants.length ? storedVariants : [{
+        option_name: "Title",
+        option_value: "Default Title",
+        sku: String(product.id),
+        barcode: "",
+        inventory_qty: Number(product.inventory_qty || 0),
+      }];
+      return variants.map((variant: Record<string, unknown>, index: number) => [
+        slugify(product.title),
+        product.title,
+        product.body_html,
+        product.vendor,
+        product.category,
+        product.category,
+        product.tags.join(","),
+        product.published ? "TRUE" : "FALSE",
+        String(variant.option_name || "Title"),
+        String(variant.option_value || "Default Title"),
+        String(variant.sku || product.id),
+        String(variant.barcode || ""),
+        product.sale_price,
+        product.compare_at_price,
+        Number(variant.inventory_qty || 0),
+        "deny",
+        "manual",
+        "TRUE",
+        "TRUE",
+        index === 0 ? product.image_url : "",
+        index === 0 ? "1" : "",
+        index === 0 ? product.title : "",
+        product.published ? "active" : "draft",
+      ].map(escapeCsv).join(","));
+    });
     const csv = "\ufeff" + [columns.map(escapeCsv).join(","), ...rows].join("\r\n");
     return new Response(csv, {
       headers: {

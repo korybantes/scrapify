@@ -268,7 +268,7 @@ def export_shopify_csv(
     columns = [
         "Handle", "Title", "Body (HTML)", "Vendor", "Product Category", "Type",
         "Tags", "Published", "Option1 Name", "Option1 Value", "Variant SKU",
-        "Variant Price", "Variant Compare At Price", "Variant Inventory Qty",
+        "Variant Barcode", "Variant Price", "Variant Compare At Price", "Variant Inventory Qty",
         "Variant Inventory Policy", "Variant Fulfillment Service",
         "Variant Requires Shipping", "Variant Taxable", "Image Src",
         "Image Position", "Image Alt Text", "Status",
@@ -278,30 +278,39 @@ def export_shopify_csv(
     writer.writeheader()
     for product in products:
         handle = "-".join(filter(None, __import__("re").sub(r"[^\w\s-]", "", product["title"].lower()).split()))
-        writer.writerow({
-            "Handle": handle,
-            "Title": product["title"],
-            "Body (HTML)": product["body_html"],
-            "Vendor": product["vendor"],
-            "Product Category": product["category"],
-            "Type": product["category"],
-            "Tags": ",".join(product["tags"]),
-            "Published": "TRUE" if product["published"] else "FALSE",
-            "Option1 Name": "Title",
-            "Option1 Value": "Default Title",
-            "Variant SKU": str(product["id"]),
-            "Variant Price": product["sale_price"] or "",
-            "Variant Compare At Price": product["compare_at_price"] or "",
-            "Variant Inventory Qty": product["inventory_qty"],
-            "Variant Inventory Policy": "deny",
-            "Variant Fulfillment Service": "manual",
-            "Variant Requires Shipping": "TRUE",
-            "Variant Taxable": "TRUE",
-            "Image Src": product["image_url"],
-            "Image Position": "1",
-            "Image Alt Text": product["title"],
-            "Status": "active" if product["published"] else "draft",
-        })
+        source_variants = product["variants"] or [{
+            "option_name": "Title",
+            "option_value": "Default Title",
+            "sku": str(product["id"]),
+            "barcode": "",
+            "inventory_qty": product["inventory_qty"],
+        }]
+        for index, variant in enumerate(source_variants):
+            writer.writerow({
+                "Handle": handle,
+                "Title": product["title"],
+                "Body (HTML)": product["body_html"],
+                "Vendor": product["vendor"],
+                "Product Category": product["category"],
+                "Type": product["category"],
+                "Tags": ",".join(product["tags"]),
+                "Published": "TRUE" if product["published"] else "FALSE",
+                "Option1 Name": variant.get("option_name") or "Title",
+                "Option1 Value": variant.get("option_value") or "Default Title",
+                "Variant SKU": variant.get("sku") or str(product["id"]),
+                "Variant Barcode": variant.get("barcode") or "",
+                "Variant Price": product["sale_price"] or "",
+                "Variant Compare At Price": product["compare_at_price"] or "",
+                "Variant Inventory Qty": variant.get("inventory_qty") or 0,
+                "Variant Inventory Policy": "deny",
+                "Variant Fulfillment Service": "manual",
+                "Variant Requires Shipping": "TRUE",
+                "Variant Taxable": "TRUE",
+                "Image Src": product["image_url"] if index == 0 else "",
+                "Image Position": "1" if index == 0 else "",
+                "Image Alt Text": product["title"] if index == 0 else "",
+                "Status": "active" if product["published"] else "draft",
+            })
     return Response(
         content="\ufeff" + output.getvalue(),
         media_type="text/csv",

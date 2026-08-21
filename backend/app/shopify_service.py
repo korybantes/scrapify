@@ -31,13 +31,31 @@ def sync_product(product_id: UUID | str, workspace_id: UUID | str) -> dict:
         raise ValueError("Product not found")
 
     handle = slugify(product["title"]) or f"scrappify-{product['id']}"
-    variant = {
-        "optionValues": [{"optionName": "Title", "name": "Default Title"}],
-        "price": str(product["sale_price"] or "0.00"),
-        "inventoryItem": {"sku": str(product["id"])},
-    }
-    if product["compare_at_price"] and product["compare_at_price"] > (product["sale_price"] or 0):
-        variant["compareAtPrice"] = str(product["compare_at_price"])
+    source_variants = product["variants"] or [{
+        "option_name": "Title",
+        "option_value": "Default Title",
+        "sku": str(product["id"]),
+        "barcode": "",
+    }]
+    option_name = str(source_variants[0].get("option_name") or "Title")
+    variants = []
+    for source_variant in source_variants:
+        variant = {
+            "optionValues": [{
+                "optionName": option_name,
+                "name": str(source_variant.get("option_value") or "Default Title"),
+            }],
+            "price": str(product["sale_price"] or "0.00"),
+            "inventoryItem": {
+                "sku": str(source_variant.get("sku") or product["id"]),
+                "tracked": True,
+            },
+        }
+        if source_variant.get("barcode"):
+            variant["barcode"] = str(source_variant["barcode"])
+        if product["compare_at_price"] and product["compare_at_price"] > (product["sale_price"] or 0):
+            variant["compareAtPrice"] = str(product["compare_at_price"])
+        variants.append(variant)
 
     variables = {
         "identifier": {"handle": handle},
@@ -49,8 +67,11 @@ def sync_product(product_id: UUID | str, workspace_id: UUID | str) -> dict:
             "productType": product["category"],
             "tags": product["tags"],
             "status": "ACTIVE" if product["published"] else "DRAFT",
-            "productOptions": [{"name": "Title", "values": [{"name": "Default Title"}]}],
-            "variants": [variant],
+            "productOptions": [{
+                "name": option_name,
+                "values": [{"name": str(item.get("option_value") or "Default Title")} for item in source_variants],
+            }],
+            "variants": variants,
         },
     }
     url = (
