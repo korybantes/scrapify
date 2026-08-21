@@ -194,6 +194,7 @@ const emptyData: DashboardData = {
 
 const nav = [
   ["Overview", LayoutDashboard],
+  ["Operations", Boxes],
   ["Products", Package],
   ["AI Studio", Sparkles],
   ["Sessions", Activity],
@@ -1750,3 +1751,4 @@ function SourceCard({ source, onRun, onEdit, onDelete }: { source: SavedSource; 
 function ServiceCard({ name, configured, detail }: { name: string; configured: boolean; detail: string }) {
   return <article className="panel settings-card"><span className="setting-service-icon">{name.includes("AI") ? <Sparkles size={18} /> : <Boxes size={18} />}</span><span className="kicker">PRODUCTION SERVICE</span><h2>{name}</h2><p>{detail}</p><div className="setting-row"><span><i className={configured ? "" : "offline"} />{configured ? "Operational" : "Not configured"}</span></div></article>;
 }
+
