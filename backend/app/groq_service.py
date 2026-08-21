@@ -1,4 +1,5 @@
 import html
+import html
 import json
 import re
 import time
@@ -22,8 +23,13 @@ LANGUAGES = {
 }
 
 
-def system_prompt(language: str) -> str:
+def system_prompt(language: str, profile: dict | None = None) -> str:
     language_name = LANGUAGES.get(language, LANGUAGES["tr"])
+    profile = profile or {}
+    brand_rules = ""
+    if profile.get("brand_voice"): brand_rules += f"\nBrand voice: {profile['brand_voice']}."
+    if profile.get("target_keywords"): brand_rules += f"\nUse these keywords naturally when factual: {', '.join(profile['target_keywords'])}."
+    if profile.get("forbidden_words"): brand_rules += f"\nNever use these words: {', '.join(profile['forbidden_words'])}."
     return f"""You are a senior Shopify ecommerce copywriter.
 Return only simple Shopify-safe HTML using <p>, <ul>, <li>, and <strong>.
 Write one compact original paragraph and 2-3 short feature bullets, under 120 words total.
@@ -31,7 +37,7 @@ Write entirely in {language_name}.
 Never mention the source retailer or invent product facts.
 Use a premium, trustworthy, sales-focused tone without exaggerated claims.
 Your response MUST begin with <p> and contain only the finished storefront HTML.
-Never output analysis, reasoning, planning, notes, labels, markdown, or commentary."""
+Never output analysis, reasoning, planning, notes, labels, markdown, or commentary.{brand_rules}"""
 
 
 def _clean_html(value: str) -> str:
@@ -123,8 +129,10 @@ def enrich_product(product_id: UUID | str, workspace_id: UUID | str, language: s
 
     with connection() as conn:
         product = conn.execute(
-            """SELECT id, title, vendor, category, sale_price
-               FROM products WHERE id = %s AND workspace_id = %s""",
+            """SELECT product.id,product.title,product.vendor,product.category,product.sale_price,
+                      profile.brand_voice,profile.target_keywords,profile.forbidden_words
+               FROM products product LEFT JOIN workspace_catalog_profiles profile ON profile.workspace_id=product.workspace_id
+               WHERE product.id = %s AND product.workspace_id = %s""",
             (product_id, workspace_id),
         ).fetchone()
     if not product:
@@ -139,7 +147,7 @@ def enrich_product(product_id: UUID | str, workspace_id: UUID | str, language: s
         ]
     )
     messages = [
-        {"role": "system", "content": system_prompt(language)},
+        {"role": "system", "content": system_prompt(language, product)},
         {"role": "user", "content": f"/no_think\n{facts}\nBegin immediately with <p>. Output only the finished HTML."},
     ]
     body_html, provider = "", ""
@@ -149,7 +157,7 @@ def enrich_product(product_id: UUID | str, workspace_id: UUID | str, language: s
         if body_html:
             break
         messages = [
-            {"role": "system", "content": system_prompt(language)},
+            {"role": "system", "content": system_prompt(language, product)},
             {"role": "user", "content": f"/no_think\n{facts}\nYour previous format was rejected. Start with <p>, add one <ul>, and output nothing else. Attempt {generation_attempt + 1}."},
         ]
     if not body_html:
@@ -195,6 +203,49 @@ def enrich_many(product_ids: list[UUID], workspace_id: UUID, language: str = "tr
                 )
                 conn.commit()
     return {"enriched": enriched, "failed": failed}
+
+def translate_many(product_ids: list[UUID], workspace_id: UUID, language: str, market: str = "") -> dict:
+    settings = get_settings()
+    completed, failed = 0, []
+    with connection() as conn:
+        products = conn.execute(
+            """SELECT product.id,product.title,product.vendor,product.category,product.sale_price,
+                      profile.brand_voice,profile.target_keywords,profile.forbidden_words
+               FROM products product LEFT JOIN workspace_catalog_profiles profile ON profile.workspace_id=product.workspace_id
+               WHERE product.workspace_id=%s AND product.id=ANY(%s)""",
+            (workspace_id, product_ids),
+        ).fetchall()
+    for product in products:
+        try:
+            facts = "\n".join([
+                f"Product: {product['title']}", f"Brand: {product['vendor'] or 'Unknown'}",
+                f"Category: {product['category'] or 'Unknown'}", f"Price: {product['sale_price'] or 'Unknown'} TRY",
+            ])
+            prompt = system_prompt(language, product) + "\nReturn <title>translated concise product title</title> followed immediately by the required <p> and <ul>."
+            messages = [
+                {"role":"system","content":prompt},
+                {"role":"user","content":f"/no_think\n{facts}\nOutput only <title>, <p>, and <ul>."},
+            ]
+            content, provider = _generate(settings, messages)
+            content = re.sub(r"<think\b[^>]*>.*?</think>", "", content, flags=re.I | re.S)
+            title_match = re.search(r"<title\b[^>]*>(.*?)</title>", content, flags=re.I | re.S)
+            body_html = _clean_html(content)
+            translated_title = html.unescape(re.sub(r"<[^>]+>", "", title_match.group(1))).strip() if title_match else product["title"]
+            if not body_html:
+                raise RuntimeError("ScrapifyAI returned an invalid translation")
+            with connection() as conn:
+                conn.execute(
+                    """INSERT INTO product_translations(workspace_id,product_id,locale,market,title,body_html,status,provider)
+                       VALUES(%s,%s,%s,%s,%s,%s,'ready',%s)
+                       ON CONFLICT(product_id,locale,market) DO UPDATE SET title=EXCLUDED.title,
+                         body_html=EXCLUDED.body_html,status='ready',provider=EXCLUDED.provider,updated_at=now()""",
+                    (workspace_id,product["id"],language,market,translated_title,body_html,provider),
+                )
+                conn.commit()
+            completed += 1
+        except Exception as exc:
+            failed.append({"id":str(product["id"]),"error":str(exc)})
+    return {"completed":completed,"failed":failed,"locale":language,"market":market}
 
 def suggest_category(products: list[dict], candidates: list[dict]) -> dict:
     settings = get_settings()

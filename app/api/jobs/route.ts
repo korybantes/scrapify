@@ -20,8 +20,10 @@ export async function POST(request: Request) {
       : [];
     const savedSource = savedSources[0];
     const categoryUrl = new URL(String(savedSource?.category_url ?? payload.category_url ?? ""));
-    if (categoryUrl.protocol !== "https:" || !allowedSourceHosts.has(categoryUrl.hostname)) {
-      return Response.json({ error: "Only approved HTTPS source URLs are allowed" }, { status: 400 });
+    const adapters = await sql`SELECT id FROM source_adapters WHERE workspace_id = ${auth.context.workspace.id}::uuid AND source_host = ${categoryUrl.hostname} AND status = 'verified'`;
+    const adapterId = adapters[0]?.id || null;
+    if (categoryUrl.protocol !== "https:" || (!allowedSourceHosts.has(categoryUrl.hostname) && !adapterId)) {
+      return Response.json({ error: "Verify this source in Source Builder before running it" }, { status: 400 });
     }
     const maxPages = Math.min(100, Math.max(1, Number(savedSource?.max_pages ?? payload.max_pages ?? 1)));
     const startPage = Math.max(1, Number(savedSource?.start_page ?? payload.start_page ?? 1));
@@ -32,10 +34,10 @@ export async function POST(request: Request) {
       : "tr";
     const rows = await sql`
       INSERT INTO scrape_jobs (
-        workspace_id, saved_source_id, source, category_name, category_url,
+        workspace_id, saved_source_id, source_adapter_id, source, category_name, category_url,
         start_page, max_pages, download_images, auto_enrich, seo_language
       ) VALUES (
-        ${auth.context.workspace.id}::uuid, ${savedSource?.id ?? null}::uuid,
+        ${auth.context.workspace.id}::uuid, ${savedSource?.id ?? null}::uuid, ${adapterId}::uuid,
         ${source}, ${categoryName}, ${categoryUrl.toString()}, ${startPage},
         ${maxPages}, ${Boolean(payload.download_images)},
         ${Boolean(savedSource?.auto_enrich ?? payload.auto_enrich)}, ${language}

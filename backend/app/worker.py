@@ -20,6 +20,45 @@ def _stop(*_args) -> None:
     stopping = True
 
 
+def schedule_due_recipes() -> int:
+    queued = 0
+    with connection() as conn:
+        with conn.transaction():
+            recipes = conn.execute(
+                """SELECT recipe.*, source.source_host, source.category_name, source.category_url,
+                          source.start_page, source.max_pages, source.seo_language
+                   FROM automation_recipes recipe
+                   JOIN saved_sources source ON source.id = recipe.source_id AND source.enabled = true
+                   WHERE recipe.enabled = true AND recipe.schedule <> 'manual'
+                     AND recipe.next_run_at <= now()
+                   ORDER BY recipe.next_run_at FOR UPDATE OF recipe SKIP LOCKED LIMIT 10"""
+            ).fetchall()
+            for recipe in recipes:
+                actions = recipe["actions"] if isinstance(recipe["actions"], list) else []
+                job = conn.execute(
+                    """INSERT INTO scrape_jobs(workspace_id,saved_source_id,automation_recipe_id,source,
+                           category_name,category_url,start_page,max_pages,auto_enrich,seo_language)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (recipe["workspace_id"],recipe["source_id"],recipe["id"],recipe["source_host"],
+                     recipe["category_name"],recipe["category_url"],recipe["start_page"],recipe["max_pages"],
+                     "enrich" in actions,recipe["seo_language"]),
+                ).fetchone()
+                conn.execute(
+                    """UPDATE automation_recipes SET last_run_at=now(),
+                       next_run_at=CASE WHEN schedule='hourly' THEN now()+interval '1 hour'
+                         WHEN schedule='weekly' THEN now()+interval '7 days' ELSE now()+interval '1 day' END,
+                       updated_at=now() WHERE id=%s""",
+                    (recipe["id"],),
+                )
+                conn.execute(
+                    """INSERT INTO operation_runs(workspace_id,recipe_id,kind,status,summary,completed_at)
+                       VALUES(%s,%s,'automation','completed',jsonb_build_object('queued_job_id',%s::text),now())""",
+                    (recipe["workspace_id"],recipe["id"],job["id"]),
+                )
+                queued += 1
+        conn.commit()
+    return queued
+
 def claim_next_job() -> dict | None:
     settings = get_settings()
     with connection() as conn:
@@ -180,6 +219,9 @@ def main() -> None:
     migrate()
     logger.info("Worker %s started", settings.worker_id)
     while not stopping:
+        scheduled = schedule_due_recipes()
+        if scheduled:
+            logger.info("Queued %s scheduled catalog automations", scheduled)
         ai_item = claim_next_ai_item()
         if ai_item:
             logger.info("Enriching product %s for AI job %s", ai_item["product_id"], ai_item["job_id"])

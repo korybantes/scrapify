@@ -10,10 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .db import close_pool, connection, migrate, open_pool
-from .groq_service import enrich_many, suggest_category
-from .schemas import CategorySuggestionRequest, IdList, JobCreate, ProductPatch
+from .groq_service import enrich_many, suggest_category, translate_many
+from .schemas import CategorySuggestionRequest, IdList, JobCreate, ProductPatch, SourceAdapterTest, TranslationRequest
 from .security import require_api_key
 from .shopify_service import sync_product
+from .scraper import test_source_adapter
 
 
 @asynccontextmanager
@@ -240,6 +241,15 @@ def ai_category_suggest(payload: CategorySuggestionRequest):
         [candidate.model_dump() for candidate in payload.candidates],
     )
 
+
+@app.post("/v1/ai/translate", dependencies=[Depends(require_api_key)])
+def ai_translate(payload: TranslationRequest):
+    return translate_many(payload.product_ids, payload.workspace_id, payload.language, payload.market)
+
+
+@app.post("/v1/sources/test", dependencies=[Depends(require_api_key)])
+def source_test(payload: SourceAdapterTest):
+    return test_source_adapter(payload.adapter_id, payload.workspace_id, str(payload.url))
 
 @app.post("/v1/shopify/sync", dependencies=[Depends(require_api_key)])
 def shopify_sync(payload: IdList):

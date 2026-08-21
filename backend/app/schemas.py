@@ -67,3 +67,12 @@ class CategorySuggestionCandidate(BaseModel):
 class CategorySuggestionRequest(BaseModel):
     products: list[CategorySuggestionProduct] = Field(min_length=1, max_length=20)
     candidates: list[CategorySuggestionCandidate] = Field(min_length=1, max_length=50)
+
+class TranslationRequest(IdList):
+    market: str = Field(default="", max_length=120)
+
+
+class SourceAdapterTest(BaseModel):
+    workspace_id: UUID
+    adapter_id: UUID
+    url: HttpUrl

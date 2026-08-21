@@ -4,6 +4,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { authClient } from "@/app/lib/auth-client";
 import { ExportWorkspace, type ExportConfig } from "@/app/app/ExportWorkspace";
+import { OperationsHub } from "@/app/app/OperationsHub";
 import {
   Activity,
   Bell,
@@ -388,6 +389,25 @@ export default function Home() {
     }, 0);
     return () => window.clearTimeout(feedback);
   }, [loadData]);
+
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("invite");
+    if (!token) return;
+    window.history.replaceState({}, "", "/app");
+    void (async () => {
+      try {
+        const accepted = await fetch("/api/operations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "accept_invite", token }) });
+        const payload = await accepted.json();
+        if (!accepted.ok) throw new Error(payload.error || "Invitation could not be accepted");
+        const switched = await fetch("/api/account/workspace", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspace_id: payload.workspace_id }) });
+        if (!switched.ok) throw new Error("Workspace could not be opened");
+        setToast("Workspace invitation accepted");
+        window.setTimeout(() => window.location.reload(), 500);
+      } catch (inviteError) {
+        setToast(inviteError instanceof Error ? inviteError.message : "Invitation could not be accepted");
+      }
+    })();
+  }, []);
 
   const notify = (message: string) => {
     setToast(message);
@@ -886,12 +906,12 @@ export default function Home() {
         </button>
         <nav>
           <p>OPERATE</p>
-          {nav.map(([item, Icon], index) => (
+          {nav.map(([item, Icon]) => (
             <button key={item} className={active === item ? "active" : ""} onClick={() => { setActive(item); setMobileNavOpen(false); }}>
               <Icon className="nav-icon" size={17} strokeWidth={1.8} />{item}
               {item === "Products" && <em>{data.summary.total_products.toLocaleString()}</em>}
               {item === "Sessions" && sessions.length > 0 && <em>{sessions.length}</em>}
-              {index === 5 && activeJob && <span className="live-dot" />}
+              {item === "Sources" && activeJob && <span className="live-dot" />}
             </button>
           ))}
         </nav>
@@ -1023,6 +1043,15 @@ export default function Home() {
 
               <ProductTable products={visibleProducts.slice(0, 8)} selected={selected} setSelected={setSelected} openProduct={setDrawer} openBulkEdit={() => setShowBulkEdit(true)} runAi={runAi} syncShopify={syncShopify} shopifyReady={data.services.shopify} downloadCsv={openExportBuilder} busyAction={busyAction} />
             </>
+          ) : active === "Operations" ? (
+            <OperationsHub
+              sources={savedSources}
+              products={data.products}
+              selected={selected}
+              shopifyReady={data.services.shopify}
+              notify={notify}
+              onNavigate={setActive}
+            />
           ) : active === "Products" ? (
             <>
               {activeProductSession && (

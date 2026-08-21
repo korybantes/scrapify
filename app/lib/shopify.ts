@@ -8,7 +8,7 @@ export function normalizeShopDomain(value: string) {
 export function shopifyConfig(request?: Request) {
   const clientId = (process.env.SHOPIFY_CLIENT_ID ?? "").trim();
   const clientSecret = (process.env.SHOPIFY_CLIENT_SECRET ?? "").trim();
-  const scopes = (process.env.SHOPIFY_SCOPES ?? "read_products,write_products,read_locations,write_inventory")
+  const scopes = (process.env.SHOPIFY_SCOPES ?? "read_products,write_products,read_locations,write_inventory,read_translations,write_translations,read_markets")
     .split(",")
     .map((scope) => scope.trim())
     .filter(Boolean)
@@ -59,7 +59,7 @@ export async function registerShopifyWebhooks(shop: string, token: string, reque
       userErrors { field message }
     }
   }`;
-  const topics = ["APP_UNINSTALLED", "CUSTOMERS_DATA_REQUEST", "CUSTOMERS_REDACT", "SHOP_REDACT"];
+  const topics = ["APP_UNINSTALLED", "PRODUCTS_UPDATE", "INVENTORY_LEVELS_UPDATE", "CUSTOMERS_DATA_REQUEST", "CUSTOMERS_REDACT", "SHOP_REDACT"];
   for (const topic of topics) {
     const response = await fetch(`https://${shop}/admin/api/${apiVersion}/graphql.json`, {
       method: "POST",

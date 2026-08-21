@@ -28,12 +28,13 @@ export async function POST(request: Request) {
     const categoryName = String(payload.category_name || "").trim().slice(0, 160);
     const categoryUrl = new URL(String(payload.category_url || ""));
     const language = LANGUAGES.has(payload.seo_language) ? payload.seo_language : "tr";
-    if (!name || !categoryName || categoryUrl.protocol !== "https:" || !allowedSourceHosts.has(categoryUrl.hostname)) {
-      return Response.json({ error: "Enter a valid name and approved HTTPS category URL" }, { status: 400 });
+    const sql = db();
+    const adapters = await sql`SELECT id FROM source_adapters WHERE workspace_id = ${auth.context.workspace.id}::uuid AND source_host = ${categoryUrl.hostname} AND status = 'verified'`;
+    if (!name || !categoryName || categoryUrl.protocol !== "https:" || (!allowedSourceHosts.has(categoryUrl.hostname) && !adapters.length)) {
+      return Response.json({ error: "Verify this source in Source Builder before saving it" }, { status: 400 });
     }
     const startPage = Math.max(1, Number(payload.start_page) || 1);
     const maxPages = Math.min(100, Math.max(1, Number(payload.max_pages) || 1));
-    const sql = db();
     const rows = await sql`
       INSERT INTO saved_sources (
         workspace_id, name, source_host, category_name, category_url,
