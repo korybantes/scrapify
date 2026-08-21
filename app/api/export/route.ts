@@ -2,17 +2,18 @@ import { db, jsonError } from "@/app/lib/server-db";
 import { requireWorkspace } from "@/app/lib/workspace";
 
 const columns = [
-  "Handle", "Title", "Body (HTML)", "Vendor", "Product Category", "Type",
+  "Handle", "Title", "Body (HTML)", "Vendor", "Product Category", "Type", "Collection",
   "Tags", "Published", "Option1 Name", "Option1 Value", "Variant SKU",
   "Variant Barcode", "Variant Price", "Variant Compare At Price", "Variant Inventory Qty",
   "Variant Inventory Policy", "Variant Fulfillment Service",
   "Variant Requires Shipping", "Variant Taxable", "Image Src",
-  "Image Position", "Image Alt Text", "Status",
+  "Image Position", "Image Alt Text", "SEO Title", "SEO Description", "Status",
 ];
 
 const escapeCsv = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
 const slugify = (value: string) =>
   value.toLocaleLowerCase("tr-TR").normalize("NFKD").replace(/[^\w\s-]/g, "").trim().replace(/[\s_-]+/g, "-");
+const plainText = (value: unknown) => String(value ?? "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 
 export async function GET(request: Request) {
   try {
@@ -26,6 +27,10 @@ export async function GET(request: Request) {
     const aiStatus = (url.searchParams.get("ai_status") ?? "").trim();
     const sessionId = (url.searchParams.get("session_id") ?? "").trim() || null;
     const readiness = (url.searchParams.get("readiness") ?? "all").trim();
+    const categoryOverride = (url.searchParams.get("category") ?? "").trim().slice(0, 255);
+    const productTypeOverride = (url.searchParams.get("product_type") ?? "").trim().slice(0, 255);
+    const collectionOverride = (url.searchParams.get("collection") ?? "").trim().slice(0, 255);
+    const extraTags = (url.searchParams.get("tags") ?? "").split(",").map((tag) => tag.trim()).filter(Boolean).slice(0, 250);
     const searchPattern = `%${query}%`;
     const products = ids.length
       ? await sql`
@@ -72,14 +77,17 @@ export async function GET(request: Request) {
         barcode: "",
         inventory_qty: Number(product.inventory_qty || 0),
       }];
+      const tags = Array.from(new Set([...(Array.isArray(product.tags) ? product.tags : []), ...extraTags]));
+      const seoDescription = plainText(product.body_html).slice(0, 320);
       return variants.map((variant: Record<string, unknown>, index: number) => [
         slugify(product.title),
         product.title,
         product.body_html,
         product.vendor,
-        product.category,
-        product.category,
-        product.tags.join(","),
+        categoryOverride || product.category,
+        productTypeOverride || product.category,
+        collectionOverride,
+        tags.join(","),
         product.published ? "TRUE" : "FALSE",
         String(variant.option_name || "Title"),
         String(variant.option_value || "Default Title"),
@@ -95,6 +103,8 @@ export async function GET(request: Request) {
         index === 0 ? product.image_url : "",
         index === 0 ? "1" : "",
         index === 0 ? product.title : "",
+        index === 0 ? product.title.slice(0, 70) : "",
+        index === 0 ? seoDescription : "",
         product.published ? "active" : "draft",
       ].map(escapeCsv).join(","));
     });

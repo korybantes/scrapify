@@ -260,6 +260,10 @@ export default function Home() {
   const [sessionMigrationRequired, setSessionMigrationRequired] = useState(false);
   const [exportSessionId, setExportSessionId] = useState("");
   const [exportScope, setExportScope] = useState<"ai_ready" | "all" | "selected">("ai_ready");
+  const [exportCategory, setExportCategory] = useState("");
+  const [exportProductType, setExportProductType] = useState("");
+  const [exportCollection, setExportCollection] = useState("");
+  const [exportTags, setExportTags] = useState("");
   const [account, setAccount] = useState<AccountData | null>(null);
   const [shopifyConnection, setShopifyConnection] = useState<ShopifyConnection>({
     configured: false,
@@ -835,19 +839,15 @@ export default function Home() {
     }
   };
 
-  const downloadCsv = () => {
+  const openExportBuilder = () => {
     if (!data.summary.total_products) return notify("There are no real products to export yet");
-    const params = new URLSearchParams();
-    if (selected.length && selected.length >= data.pagination.total) {
-      params.set("scope", "matching");
-      if (query) params.set("query", query);
-      if (sourceFilter) params.set("source", sourceFilter);
-      if (aiStatusFilter) params.set("ai_status", aiStatusFilter);
-      if (sessionFilter) params.set("session_id", sessionFilter);
-    } else if (selected.length) {
-      params.set("ids", selected.join(","));
+    if (selected.length) {
+      setExportScope("selected");
+    } else {
+      setExportScope("ai_ready");
+      if (sessionFilter) setExportSessionId(sessionFilter);
     }
-    window.location.href = `/api/export${params.size ? `?${params}` : ""}`;
+    setActive("Exports");
   };
 
   const downloadGuidedExport = () => {
@@ -859,6 +859,10 @@ export default function Home() {
       if (exportSessionId) params.set("session_id", exportSessionId);
       params.set("readiness", exportScope);
     }
+    if (exportCategory.trim()) params.set("category", exportCategory.trim());
+    if (exportProductType.trim()) params.set("product_type", exportProductType.trim());
+    if (exportCollection.trim()) params.set("collection", exportCollection.trim());
+    if (exportTags.trim()) params.set("tags", exportTags.trim());
     window.location.href = `/api/export?${params}`;
   };
 
@@ -1054,7 +1058,7 @@ export default function Home() {
                 </article>
               </section>
 
-              <ProductTable products={visibleProducts.slice(0, 8)} selected={selected} setSelected={setSelected} openProduct={setDrawer} openBulkEdit={() => setShowBulkEdit(true)} runAi={runAi} syncShopify={syncShopify} shopifyReady={data.services.shopify} downloadCsv={downloadCsv} busyAction={busyAction} />
+              <ProductTable products={visibleProducts.slice(0, 8)} selected={selected} setSelected={setSelected} openProduct={setDrawer} openBulkEdit={() => setShowBulkEdit(true)} runAi={runAi} syncShopify={syncShopify} shopifyReady={data.services.shopify} downloadCsv={openExportBuilder} busyAction={busyAction} />
             </>
           ) : active === "Products" ? (
             <>
@@ -1081,7 +1085,7 @@ export default function Home() {
                 runAi={runAi}
                 syncShopify={syncShopify}
                 shopifyReady={data.services.shopify}
-                downloadCsv={downloadCsv}
+                downloadCsv={openExportBuilder}
                 busyAction={busyAction}
                 onNewJob={openRunModal}
                 pagination={data.pagination}
@@ -1258,6 +1262,19 @@ export default function Home() {
                       <span className="export-choice-icon"><Check size={17} /></span><span><strong>My selected products</strong><small>{selected.length ? "Your current selection from Products" : "Select products first to use this option"}</small></span><i>{selected.length}</i>
                     </button>
                   </div>
+
+                  <div className="export-divider" />
+                  <div className="export-step">
+                    <span className="export-step-number">3</span>
+                    <div><h3>Organize products in Shopify</h3><p>Set the taxonomy category Shopify recognizes, plus your own type, collection, and tags.</p></div>
+                  </div>
+                  <div className="export-mapping-grid">
+                    <label className="full"><span>Shopify product category <em>Standard taxonomy</em></span><input value={exportCategory} onChange={(event) => setExportCategory(event.target.value)} list="shopify-category-suggestions" placeholder="Apparel & Accessories > Shoes > Sneakers" /><small>Use the full English breadcrumb or Shopify category ID. A short value such as &quot;Shoes&quot; may be ignored.</small></label>
+                    <datalist id="shopify-category-suggestions"><option value="Apparel & Accessories > Shoes > Sneakers" /><option value="Health & Beauty > Personal Care > Cosmetics > Perfumes & Colognes" /></datalist>
+                    <label><span>Custom product type</span><input value={exportProductType} onChange={(event) => setExportProductType(event.target.value)} placeholder={selectedExportSession?.category_name || "Men's sneakers"} /><small>Your own store-facing classification.</small></label>
+                    <label><span>Collection</span><input value={exportCollection} onChange={(event) => setExportCollection(event.target.value)} placeholder={selectedExportSession?.category_name || "Summer collection"} /><small>Creates or assigns one manual collection.</small></label>
+                    <label className="full"><span>Additional tags</span><input value={exportTags} onChange={(event) => setExportTags(event.target.value)} placeholder="men, sneakers, premium" /><small>Comma-separated; existing product tags are preserved.</small></label>
+                  </div>
                 </article>
 
                 <aside className="panel export-receipt">
@@ -1266,7 +1283,8 @@ export default function Home() {
                   <h3>{selectedExportSession?.category_name || "Complete workspace"}</h3>
                   <p>{exportScope === "ai_ready" ? "Only products with completed AI descriptions" : exportScope === "selected" ? "Only your manually selected products" : "Every collected product, regardless of AI status"}</p>
                   <div className="export-count"><strong>{exportProductCount.toLocaleString()}</strong><span>products will be exported</span></div>
-                  <ul><li><Check size={13} /> Shopify-compatible columns</li><li><Check size={13} /> Product titles, pricing and inventory</li><li><Check size={13} /> Images, tags and SEO descriptions</li></ul>
+                  <div className="export-organization-summary"><span><small>PRODUCT CATEGORY</small><strong>{exportCategory || "Uses each product's current value"}</strong></span><span><small>TYPE / COLLECTION</small><strong>{[exportProductType, exportCollection].filter(Boolean).join(" · ") || "Uses product defaults"}</strong></span></div>
+                  <ul><li><Check size={13} /> Shopify category, type and collection columns</li><li><Check size={13} /> Product titles, pricing and variant inventory</li><li><Check size={13} /> Images, tags and explicit SEO fields</li></ul>
                   {shopifyProgress && busyAction === "shopify" && <div className="shopify-publish-progress"><div><span>Publishing to Shopify</span><strong>{shopifyProgress.completed}/{shopifyProgress.total}</strong></div><div className="progress-track"><i style={{ width: `${Math.round((shopifyProgress.completed / shopifyProgress.total) * 100)}%` }} /></div><small>{shopifyProgress.failed ? `${shopifyProgress.failed} need attention` : "Creating products securely"}</small></div>}
                   <button className="shopify-publish-button wide" disabled={!exportProductCount || busyAction === "shopify"} onClick={() => void publishGuidedToShopify()}><ShoppingBag size={15} /> {data.services.shopify ? busyAction === "shopify" ? "Publishing…" : "Publish directly to Shopify" : "Connect Shopify to publish"}</button>
                   <button className="primary-button wide" disabled={!exportProductCount} onClick={downloadGuidedExport}><Download size={15} /> Download Shopify CSV</button>

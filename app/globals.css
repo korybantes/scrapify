@@ -812,3 +812,18 @@ body { -webkit-font-smoothing: antialiased; }
 .variant-chip-grid > span.sold-out { color: #8b928c; background: #f2f3ef; }
 .variant-chip-grid strong { font-size: 9px; }.variant-chip-grid small { font-size: 6px; font-weight: 500; }
 @media (max-width: 760px) { .variant-chip-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }.product-variants-card > div:first-child { align-items: flex-start; flex-direction: column; gap: 5px; } }
+/* Shopify export organization */
+.export-mapping-grid { margin: 17px 0 0 43px; display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+.export-mapping-grid label { min-width: 0; display: grid; gap: 7px; }
+.export-mapping-grid label.full { grid-column: 1/-1; }
+.export-mapping-grid label > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #344039; font-size: 8px; font-weight: 750; }
+.export-mapping-grid label em { padding: 4px 6px; color: #49634f; border-radius: 99px; background: #edf4e8; font-size: 6px; font-style: normal; text-transform: uppercase; }
+.export-mapping-grid input { width: 100%; height: 43px; padding: 0 12px; color: #263029; border: 1px solid #dce1da; border-radius: 8px; background: #fafbf8; font-size: 9px; outline: 0; }
+.export-mapping-grid input:focus { border-color: #56826e; box-shadow: 0 0 0 3px rgba(86,130,110,.1); }
+.export-mapping-grid small { color: #8a938c; font-size: 7px; line-height: 1.45; }
+.export-organization-summary { margin: -8px 0 19px; display: grid; gap: 8px; }
+.export-organization-summary > span { padding: 10px 11px; display: grid; gap: 4px; border: 1px solid #376255; border-radius: 8px; background: #1d493d; }
+.export-organization-summary small { color: #88aa9e; font: 650 6px var(--font-geist-mono); letter-spacing: .8px; }
+.export-organization-summary strong { color: #eaf2ee; font-size: 8px; line-height: 1.45; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .export-mapping-grid { margin-left: 0; } }
+@media (max-width: 520px) { .export-mapping-grid { grid-template-columns: 1fr; }.export-mapping-grid label.full { grid-column: auto; } }
