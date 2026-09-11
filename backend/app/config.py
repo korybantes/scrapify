@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     database_url: str = Field(validation_alias=AliasChoices("DATABASE_URL", "NEON_DB_URL"))
     groq_api_key: str | None = None
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "qwen/qwen3.6-27b"
     ai_provider: str = "hybrid"
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3:4b"

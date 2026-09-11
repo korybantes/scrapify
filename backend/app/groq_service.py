@@ -11,6 +11,15 @@ from .config import get_settings
 from .db import connection
 
 
+DEFAULT_GROQ_MODEL = "qwen/qwen3.6-27b"
+RETIRED_GROQ_MODELS = {"llama-3.3-70b-versatile", "llama-3.1-8b-instant"}
+
+
+def _active_groq_model(configured: str | None) -> str:
+    model = (configured or "").strip()
+    return DEFAULT_GROQ_MODEL if not model or model in RETIRED_GROQ_MODELS else model
+
+
 LANGUAGES = {
     "tr": "Turkish",
     "en": "English",
@@ -69,7 +78,7 @@ def _groq_completion(settings, messages: list[dict]) -> str:
             "Content-Type": "application/json",
         },
         json={
-            "model": settings.groq_model,
+            "model": _active_groq_model(settings.groq_model),
             "temperature": 0.35,
             "max_completion_tokens": 320,
             "messages": messages,
@@ -118,9 +127,7 @@ def _generate(settings, messages: list[dict]) -> tuple[str, str]:
         return _groq_completion(settings, messages), "groq"
     try:
         return _groq_completion(settings, messages), "groq"
-    except (RuntimeError, httpx.HTTPStatusError) as exc:
-        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code != 429:
-            raise
+    except (RuntimeError, httpx.HTTPError):
         return _ollama_completion(settings, messages), "ollama"
 
 

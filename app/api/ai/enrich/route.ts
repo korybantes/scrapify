@@ -1,4 +1,5 @@
 import { db, jsonError } from "@/app/lib/server-db";
+import { activeGroqModel } from "@/app/lib/groq-model";
 import { requireWorkspace } from "@/app/lib/workspace";
 
 export const maxDuration = 300;
@@ -22,8 +23,6 @@ Never mention the source retailer or invent product facts.
 Use a premium, trustworthy tone without exaggerated claims.
 Your response MUST begin with <p> and contain only the finished storefront HTML.
 Never output analysis, reasoning, planning, notes, markdown, or commentary.`;
-
-class GroqRateLimitError extends Error {}
 
 function cleanHtml(value: string) {
   const withoutThinking = value.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "").replace(/```(?:html)?|```/gi, "");
@@ -50,7 +49,7 @@ async function generateWithGroq(
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile",
+      model: activeGroqModel(),
       temperature: 0.35,
       max_completion_tokens: 320,
       messages: [
@@ -62,10 +61,10 @@ async function generateWithGroq(
       ],
     }),
   });
-  if (response.status === 429) {
-    throw new GroqRateLimitError("Groq free-tier limit reached");
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null);
+    throw new Error(failure?.error?.message || `Groq returned ${response.status}`);
   }
-  if (!response.ok) throw new Error(`Groq returned ${response.status}`);
   const result = await response.json();
   const bodyHtml = cleanHtml(result.choices?.[0]?.message?.content ?? "");
   if (!bodyHtml) throw new Error("AI returned an empty description");
@@ -129,7 +128,7 @@ export async function POST(request: Request) {
           try {
             bodyHtml = await generateWithGroq(apiKey, language, product);
           } catch (error) {
-            if (!(error instanceof GroqRateLimitError) || !hasLocalFallback) throw error;
+            if (!hasLocalFallback) throw error;
             await enrichWithVps(String(product.id), auth.context.workspace.id, languageCode);
             provider = "local";
           }

@@ -1,4 +1,5 @@
 import { db, jsonError } from "@/app/lib/server-db";
+import { activeGroqModel } from "@/app/lib/groq-model";
 import { requireWorkspace } from "@/app/lib/workspace";
 import taxonomyPayload from "@/public/shopify-taxonomy-2026-05.json";
 
@@ -65,7 +66,7 @@ async function suggestWithGroq(products: Array<Record<string, unknown>>, candida
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile",
+      model: activeGroqModel(),
       temperature: 0,
       max_completion_tokens: 120,
       response_format: { type: "json_object" },
