@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .db import close_pool, connection, migrate, open_pool
 from .groq_service import enrich_many, suggest_category, translate_many
+from .product_titles import export_product_title
 from .schemas import CategorySuggestionRequest, IdList, JobCreate, ProductPatch, SourceAdapterTest, TranslationRequest
 from .security import require_api_key
 from .shopify_service import sync_product
@@ -295,7 +296,8 @@ def export_shopify_csv(
     writer = csv.DictWriter(output, fieldnames=columns)
     writer.writeheader()
     for product in products:
-        handle = "-".join(filter(None, __import__("re").sub(r"[^\w\s-]", "", product["title"].lower()).split()))
+        export_title = export_product_title(product["title"], product["vendor"])
+        handle = "-".join(filter(None, __import__("re").sub(r"[^\w\s-]", "", export_title.lower()).split()))
         source_variants = product["variants"] or [{
             "option_name": "Title",
             "option_value": "Default Title",
@@ -306,7 +308,7 @@ def export_shopify_csv(
         for index, variant in enumerate(source_variants):
             writer.writerow({
                 "Handle": handle,
-                "Title": product["title"],
+                "Title": export_title,
                 "Body (HTML)": product["body_html"],
                 "Vendor": product["vendor"],
                 "Product Category": product["category"],
@@ -326,7 +328,7 @@ def export_shopify_csv(
                 "Variant Taxable": "TRUE",
                 "Image Src": product["image_url"] if index == 0 else "",
                 "Image Position": "1" if index == 0 else "",
-                "Image Alt Text": product["title"] if index == 0 else "",
+                "Image Alt Text": export_title if index == 0 else "",
                 "Status": "active" if product["published"] else "draft",
             })
     return Response(

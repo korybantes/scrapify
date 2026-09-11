@@ -1,4 +1,5 @@
 import { db, jsonError } from "@/app/lib/server-db";
+import { exportProductTitle } from "@/app/lib/product-title";
 import { decryptSecret } from "@/app/lib/secrets";
 import { requireWorkspace } from "@/app/lib/workspace";
 
@@ -114,7 +115,8 @@ export async function POST(request: Request) {
     const failed: Array<{ id: string; error: string }> = [];
     for (const product of products) {
       try {
-        const handle = slugify(product.title) || `scrappify-${product.id}`;
+        const exportTitle = exportProductTitle(product.title, product.vendor);
+        const handle = slugify(exportTitle) || "scrappify-" + product.id;
         const sourceVariants = Array.isArray(product.variants) && product.variants.length ? product.variants : [{
           option_name: "Title", option_value: "Default Title", sku: String(product.id),
           barcode: "", inventory_qty: Number(product.inventory_qty || 0),
@@ -157,7 +159,7 @@ export async function POST(request: Request) {
           }));
 
         const productInput: Record<string, unknown> = {
-          title: product.title,
+          title: exportTitle,
           handle,
           descriptionHtml: product.body_html,
           vendor: product.vendor,
@@ -171,7 +173,7 @@ export async function POST(request: Request) {
             })),
           }],
           variants,
-          files: product.image_url ? [{ originalSource: product.image_url, alt: product.title }] : [],
+          files: product.image_url ? [{ originalSource: product.image_url, alt: exportTitle }] : [],
         };
         if (categoryUid) productInput.category = `gid://shopify/TaxonomyCategory/${categoryUid}`;
         if (collectionIds.length) productInput.collections = collectionIds;
@@ -189,7 +191,7 @@ export async function POST(request: Request) {
           WHERE id = ${product.id} AND workspace_id = ${auth.context.workspace.id}::uuid`;
         await sql`INSERT INTO activity_events(workspace_id, product_id, event_type, message, metadata)
           VALUES (${auth.context.workspace.id}::uuid, ${product.id}, 'shopify_synced',
-            ${`Synced ${product.title} to Shopify`},
+            ${`Synced ${exportTitle} to Shopify`},
             ${JSON.stringify({ shopify_product_id: shopifyProduct.id, collections: collectionNames, category: categoryUid })}::jsonb)`;
         synced.push({ id: String(product.id), shopify_product_id: shopifyProduct.id });
       } catch (error) {

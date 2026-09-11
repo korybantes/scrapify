@@ -1,4 +1,5 @@
 import { db, jsonError } from "@/app/lib/server-db";
+import { exportProductTitle } from "@/app/lib/product-title";
 import { requireWorkspace } from "@/app/lib/workspace";
 
 const columns = [
@@ -130,6 +131,7 @@ export async function GET(request: Request) {
           ORDER BY updated_at DESC`;
 
     const rows = products.flatMap((product) => {
+      const exportTitle = exportProductTitle(product.title, product.vendor);
       const storedVariants = Array.isArray(product.variants) ? product.variants : [];
       const variants = storedVariants.length ? storedVariants : [{
         option_name: "Title", option_value: "Default Title", sku: String(product.id),
@@ -147,7 +149,7 @@ export async function GET(request: Request) {
       const googleLabels = Array.isArray(config.google?.labels) ? config.google!.labels!.slice(0, 5) : [];
 
       return variants.map((variant: Record<string, unknown>, index: number) => [
-        slugify(product.title), product.title, product.body_html, product.vendor,
+        slugify(exportTitle), exportTitle, product.body_html, product.vendor,
         config.categoryId || product.category,
         config.productType || product.category,
         config.collections?.[0] || "",
@@ -158,7 +160,7 @@ export async function GET(request: Request) {
         price, configuredCompareAt, Number(variant.inventory_qty || 0),
         config.inventoryPolicy || "deny", "manual", "TRUE", "TRUE",
         index === 0 ? product.image_url : "", index === 0 ? "1" : "",
-        index === 0 ? product.title : "", index === 0 ? product.title.slice(0, 70) : "",
+        index === 0 ? exportTitle : "", index === 0 ? exportTitle.slice(0, 70) : "",
         index === 0 ? seoDescription : "",
         config.google?.category || "", config.google?.gender || "",
         config.google?.ageGroup || "", config.google?.condition || "new",

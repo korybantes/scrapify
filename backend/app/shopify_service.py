@@ -5,6 +5,7 @@ from slugify import slugify
 
 from .config import get_settings
 from .db import connection
+from .product_titles import export_product_title
 
 
 PRODUCT_SET_MUTATION = """
@@ -30,7 +31,8 @@ def sync_product(product_id: UUID | str, workspace_id: UUID | str) -> dict:
     if not product:
         raise ValueError("Product not found")
 
-    handle = slugify(product["title"]) or f"scrappify-{product['id']}"
+    export_title = export_product_title(product["title"], product["vendor"])
+    handle = slugify(export_title) or "scrappify-" + str(product["id"])
     source_variants = product["variants"] or [{
         "option_name": "Title",
         "option_value": "Default Title",
@@ -60,7 +62,7 @@ def sync_product(product_id: UUID | str, workspace_id: UUID | str) -> dict:
     variables = {
         "identifier": {"handle": handle},
         "input": {
-            "title": product["title"],
+            "title": export_title,
             "handle": handle,
             "descriptionHtml": product["body_html"],
             "vendor": product["vendor"],
@@ -113,7 +115,7 @@ def sync_product(product_id: UUID | str, workspace_id: UUID | str) -> dict:
             (
                 workspace_id,
                 product_id,
-                f"Synced {product['title']} to Shopify",
+                f"Synced {export_title} to Shopify",
                 '{"shopify_product_id": "' + shopify_product["id"] + '"}',
             ),
         )
