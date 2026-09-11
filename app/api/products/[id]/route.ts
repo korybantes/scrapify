@@ -11,6 +11,7 @@ const editableFields = new Set([
   "tags",
   "published",
   "inventory_qty",
+  "images",
 ]);
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -41,6 +42,23 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const payload = Object.fromEntries(
       Object.entries(input).filter(([key]) => editableFields.has(key)),
     );
+    if ("images" in payload) {
+      const sourceImages = Array.isArray(payload.images) ? payload.images.slice(0, 20) : [];
+      payload.images = sourceImages.map((value, index) => {
+        const image = value && typeof value === "object" ? value as Record<string, unknown> : {};
+        const url = String(image.url || "").trim();
+        return {
+          ...image,
+          id: String(image.id || crypto.randomUUID()),
+          url,
+          source_url: String(image.source_url || url).trim(),
+          alt: String(image.alt || "").slice(0, 500),
+          position: index + 1,
+          variant_ids: Array.isArray(image.variant_ids) ? image.variant_ids.map(String).slice(0, 50) : [],
+        };
+      }).filter((image) => /^https:\/\//i.test(image.url));
+    }
+    const nextImages = payload.images as Array<Record<string, unknown>> | undefined;
     const sql = db();
     const rows = await sql`
       UPDATE products SET
@@ -53,6 +71,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         tags = CASE WHEN ${"tags" in payload} THEN ${payload.tags as string[] ?? []} ELSE tags END,
         published = CASE WHEN ${"published" in payload} THEN ${payload.published as boolean ?? false} ELSE published END,
         inventory_qty = CASE WHEN ${"inventory_qty" in payload} THEN ${payload.inventory_qty as number ?? 0} ELSE inventory_qty END,
+        images = CASE WHEN ${"images" in payload} THEN ${JSON.stringify(nextImages ?? [])}::jsonb ELSE images END,
+        image_url = CASE WHEN ${"images" in payload} THEN ${String(nextImages?.[0]?.url || "")} ELSE image_url END,
         updated_at = now()
       WHERE id = ${id}::uuid AND workspace_id = ${auth.context.workspace.id}::uuid
       RETURNING *

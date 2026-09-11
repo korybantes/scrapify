@@ -76,3 +76,7 @@ class SourceAdapterTest(BaseModel):
     workspace_id: UUID
     adapter_id: UUID
     url: HttpUrl
+
+class ProductImageAction(BaseModel):
+    image_id: str = Field(min_length=8, max_length=128)
+    action: str = Field(pattern="^(analyze|normalize|remove_background)$")

@@ -1,3 +1,4 @@
+import hashlib
 import ipaddress
 import socket
 import re
@@ -125,6 +126,17 @@ def _text(card, selectors: list[str], exclude: str = "") -> str:
     return ""
 
 
+def _image_record(url: str, alt: str, position: int) -> dict:
+    return {
+        "id": hashlib.md5(url.encode("utf-8")).hexdigest(),
+        "url": url,
+        "source_url": url,
+        "position": position,
+        "alt": alt,
+        "variant_ids": [],
+        "processing_status": "original",
+    }
+
 def _extract_product(card, source: str, category: str, adapter: dict | None = None) -> dict | None:
     adapter = adapter or {}
     vendor = _text(card, [adapter["vendor"]] if adapter.get("vendor") else BRAND_SELECTORS)
@@ -192,6 +204,7 @@ def _extract_product(card, source: str, category: str, adapter: dict | None = No
                 image_url = f"https:{image_url}"
             break
 
+    images = [_image_record(image_url, title, 1)] if image_url else []
     return {
         "source": source,
         "source_product_url": href,
@@ -201,6 +214,7 @@ def _extract_product(card, source: str, category: str, adapter: dict | None = No
         "sale_price": sale_price,
         "compare_at_price": compare_at,
         "image_url": image_url,
+        "images": images,
         "price_warning": price_warning or compare_warning,
         "raw_data": {
             "title": title,
@@ -246,11 +260,15 @@ def _normalize_beymen_summary(payload: dict | None) -> dict:
         aggregate_inventory = 0
     if variants:
         aggregate_inventory = sum(variant["inventory_qty"] for variant in variants)
+    primary_image = str(result.get("image") or "").replace("{width}", "1600").replace("{height}", "1600")
     return {
         "loaded": bool(result),
         "variants": variants,
         "inventory_qty": aggregate_inventory,
         "option_name": option_name,
+        "vendor": str(result.get("brandName") or "").strip(),
+        "title": str(result.get("displayName") or "").strip(),
+        "images": [_image_record(primary_image, str(result.get("displayName") or ""), 1)] if primary_image else [],
     }
 
 
@@ -321,14 +339,102 @@ def _load_beymen_summaries(page: Page, product_ids: list[int]) -> dict[str, dict
     )
 
 
+def _load_beymen_details(page: Page, products: list[dict]) -> dict[str, dict]:
+    if not products:
+        return {}
+    return page.evaluate(
+        """async (items) => {
+          const results = {};
+          let cursor = 0;
+          function productNode(value) {
+            if (!value) return null;
+            if (Array.isArray(value)) {
+              for (const item of value) { const found = productNode(item); if (found) return found; }
+              return null;
+            }
+            if (typeof value !== "object") return null;
+            const types = Array.isArray(value["@type"]) ? value["@type"] : [value["@type"]];
+            if (types.includes("Product")) return value;
+            if (value["@graph"]) return productNode(value["@graph"]);
+            return null;
+          }
+          async function worker() {
+            while (cursor < items.length) {
+              const item = items[cursor++];
+              try {
+                const response = await fetch(item.url, { credentials: "same-origin" });
+                if (!response.ok) continue;
+                const html = await response.text();
+                const document = new DOMParser().parseFromString(html, "text/html");
+                let product = null;
+                for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+                  try { product = productNode(JSON.parse(script.textContent || "null")); } catch (_) {}
+                  if (product) break;
+                }
+                if (!product) continue;
+                const rawImages = Array.isArray(product.image) ? product.image : [product.image];
+                results[String(item.id)] = {
+                  title: String(product.name || "").trim(),
+                  vendor: String(product.brand?.name || product.brand || "").trim(),
+                  images: rawImages.map(String).filter(url => url.startsWith("https://")),
+                };
+              } catch (_) {}
+            }
+          }
+          await Promise.all(Array.from({ length: Math.min(6, items.length) }, worker));
+          return results;
+        }""",
+        products,
+    )
+
+def _merge_product_images(incoming: list[dict], existing: list[dict]) -> list[dict]:
+    incoming_sources = {
+        str(item.get("source_url") or item.get("url") or "")
+        for item in incoming if item.get("source_url") or item.get("url")
+    }
+    # Replace the old single card thumbnail once the product page exposes a real gallery.
+    # Keep galleries that users reordered, processed, captioned, or mapped to variants.
+    if len(existing) == 1 and len(incoming) > 1:
+        legacy = existing[0]
+        legacy_source = str(legacy.get("source_url") or legacy.get("url") or "")
+        customized = (
+            legacy.get("processing_status") not in {None, "", "original"}
+            or bool(legacy.get("variant_ids"))
+            or bool(legacy.get("sha256"))
+        )
+        if legacy_source not in incoming_sources and not customized:
+            existing = []
+    merged = []
+    seen = set()
+    incoming_by_source = {
+        str(item.get("source_url") or item.get("url") or ""): item
+        for item in incoming if item.get("source_url") or item.get("url")
+    }
+    for stored in existing:
+        key = str(stored.get("source_url") or stored.get("url") or "")
+        if not key or key in seen:
+            continue
+        merged.append({**incoming_by_source.get(key, {}), **stored})
+        seen.add(key)
+    for item in incoming:
+        key = str(item.get("source_url") or item.get("url") or "")
+        if not key or key in seen:
+            continue
+        merged.append(item)
+        seen.add(key)
+    return [dict(item, position=index + 1) for index, item in enumerate(merged)]
+
 def _upsert_product(product: dict, workspace_id: UUID, job_id: UUID) -> UUID:
     import json
-    tracked_fields = ["title", "vendor", "category", "sale_price", "compare_at_price", "image_url", "inventory_qty", "variants"]
+    tracked_fields = ["title", "vendor", "category", "sale_price", "compare_at_price", "image_url", "images", "inventory_qty", "variants"]
     with connection() as conn:
         existing = conn.execute(
             """SELECT * FROM products WHERE workspace_id = %s AND source = %s AND source_product_url = %s""",
             (workspace_id, product["source"], product["source_product_url"]),
         ).fetchone()
+        product["images"] = _merge_product_images(product.get("images") or [], list(existing.get("images") or []) if existing else [])
+        product["image_url"] = str(product["images"][0].get("url") or "") if product["images"] else product.get("image_url", "")
+        product["raw_data"]["images"] = product["images"]
         approval_row = conn.execute(
             """SELECT coalesce(recipe.approval_required, false) AS required
                FROM scrape_jobs job LEFT JOIN automation_recipes recipe ON recipe.id = job.automation_recipe_id
@@ -365,20 +471,20 @@ def _upsert_product(product: dict, workspace_id: UUID, job_id: UUID) -> UUID:
                 """INSERT INTO products (
                      workspace_id, source, source_product_url, title, vendor, category,
                      sale_price, compare_at_price, image_url, price_warning, raw_data,
-                     variants, inventory_qty
+                     variants, inventory_qty, images
                    ) VALUES (
                      %(workspace_id)s, %(source)s, %(source_product_url)s, %(title)s, %(vendor)s, %(category)s,
                      %(sale_price)s, %(compare_at_price)s, %(image_url)s, %(price_warning)s,
-                     %(raw_data)s::jsonb, %(variants)s::jsonb, %(inventory_qty)s
+                     %(raw_data)s::jsonb, %(variants)s::jsonb, %(inventory_qty)s, %(images)s::jsonb
                    )
                    ON CONFLICT (workspace_id, source, source_product_url) DO UPDATE SET
                      title=EXCLUDED.title,vendor=EXCLUDED.vendor,category=EXCLUDED.category,
                      sale_price=EXCLUDED.sale_price,compare_at_price=EXCLUDED.compare_at_price,
-                     image_url=EXCLUDED.image_url,price_warning=EXCLUDED.price_warning,raw_data=EXCLUDED.raw_data,
+                     image_url=EXCLUDED.image_url,images=EXCLUDED.images,price_warning=EXCLUDED.price_warning,raw_data=EXCLUDED.raw_data,
                      variants=CASE WHEN %(variants_loaded)s THEN EXCLUDED.variants ELSE products.variants END,
                      inventory_qty=CASE WHEN %(variants_loaded)s THEN EXCLUDED.inventory_qty ELSE products.inventory_qty END,
                      last_seen_at=now(),updated_at=now() RETURNING id""",
-                {**product,"workspace_id":workspace_id,"raw_data":json.dumps(product["raw_data"],ensure_ascii=False),"variants":json.dumps(product.get("variants") or [],ensure_ascii=False),"inventory_qty":product.get("inventory_qty",0),"variants_loaded":bool(product.get("variants_loaded"))},
+                {**product,"workspace_id":workspace_id,"raw_data":json.dumps(product["raw_data"],ensure_ascii=False),"variants":json.dumps(product.get("variants") or [],ensure_ascii=False),"images":json.dumps(product.get("images") or [],ensure_ascii=False),"inventory_qty":product.get("inventory_qty",0),"variants_loaded":bool(product.get("variants_loaded"))},
             ).fetchone()
             product_id = row["id"]
 
@@ -506,12 +612,26 @@ def run_scrape_job(job: dict) -> None:
                 if (product_id := _beymen_product_id(product["source_product_url"])) is not None
             ] if source_host.endswith("beymen.com") else []
             summaries = _load_beymen_summaries(page, list(dict.fromkeys(beymen_ids)))
+            details = _load_beymen_details(page, [
+                {"id": product_id, "url": product["source_product_url"]}
+                for product in extracted_products
+                if (product_id := _beymen_product_id(product["source_product_url"])) is not None
+            ]) if beymen_ids else {}
             variant_products = 0
             page_product_ids: list[UUID] = []
             for product in extracted_products:
                 try:
                     source_product_id = _beymen_product_id(product["source_product_url"])
                     summary = _normalize_beymen_summary(summaries.get(str(source_product_id))) if source_product_id else {"loaded": False}
+                    detail = details.get(str(source_product_id), {}) if source_product_id else {}
+                    product["vendor"] = detail.get("vendor") or summary.get("vendor") or product["vendor"]
+                    product["title"] = detail.get("title") or summary.get("title") or product["title"]
+                    gallery_urls = detail.get("images") or [item.get("url") for item in summary.get("images", [])]
+                    if gallery_urls:
+                        gallery_urls = list(dict.fromkeys(url for url in gallery_urls if url))[:20]
+                        product["images"] = [_image_record(url, product["title"], index + 1) for index, url in enumerate(gallery_urls)]
+                        product["image_url"] = product["images"][0]["url"]
+                    product["raw_data"].update({"title": product["title"], "vendor": product["vendor"], "images": product.get("images", [])})
                     product["variants_loaded"] = bool(summary.get("loaded"))
                     if product["variants_loaded"]:
                         product["variants"] = summary["variants"]
@@ -526,7 +646,7 @@ def run_scrape_job(job: dict) -> None:
                 except Exception as exc:
                     _log(job_id, workspace_id, f"Could not save one product: {exc}", "warning")
             if beymen_ids:
-                _log(job_id, workspace_id, f"Loaded real size and stock variants for {variant_products} products")
+                _log(job_id, workspace_id, f"Loaded galleries plus real size and stock variants for {variant_products} products")
 
             progress = int(((page_index + 1) / job["max_pages"]) * 100)
             with connection() as conn:

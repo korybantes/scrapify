@@ -15,7 +15,7 @@ warning, and metric shown in the authenticated dashboard comes from PostgreSQL.
 - Reusable saved sources with page settings and default SEO language
 - Turkish, English, German, French, Spanish, Polish, Arabic, and Italian AI copy
 - Live scrape queue and Playwright background worker
-- Product review, Shopify CSV export, and Shopify Admin API sync
+- Product review, multi-image galleries, quality checks, Shopify CSV export, and Shopify Admin API sync
 - Workspace-scoped products, sources, jobs, events, exports, and AI actions
 
 ## Architecture
@@ -58,18 +58,13 @@ The API and worker apply all idempotent SQL migrations on startup.
 ## Recommended deployment
 
 - Frontend and authenticated web routes: **Vercel**
-- FastAPI service and Playwright worker: **Railway**
+- FastAPI, Playwright worker, Ollama, and image processing: **Ubuntu VPS with Docker Compose**
 - Database: any supported PostgreSQL provider
 
-`vercel.json` uses the standard Next.js build. For Railway, create two services
-from this repository:
-
-1. API service using `railway-api.toml`
-2. Worker service using `railway-worker.toml`
-
-Both services use the same Docker image and database. The API gets a public
-domain; the worker remains private. `docker-compose.yml` provides the equivalent
-two-service layout for local or compose-based deployment.
+`vercel.json` deploys the web application. The VPS runs `docker-compose.yml`,
+with persistent volumes for Ollama models, processed product media, and the
+background-removal model. Only the API needs a public HTTPS domain; the worker
+remains private.
 
 ### Frontend environment
 
@@ -115,6 +110,7 @@ directly from the guided Export screen.
 - `DATABASE_URL`
 - `GROQ_API_KEY`
 - `SCRAPPIFY_API_KEY`
+- `PUBLIC_API_URL` (the same public HTTPS backend origin used by Vercel)
 - `ALLOWED_ORIGINS`
 - `ALLOWED_SOURCE_HOSTS`
 - optional `SHOPIFY_STORE_DOMAIN`
@@ -123,6 +119,18 @@ directly from the guided Export screen.
 The GitHub workflow publishes the backend container to
 `ghcr.io/korybantes/scrappify-backend:latest`.
 
+### Product media
+
+Every product can keep up to 20 ordered images. The product editor supports
+cover selection, drag-to-reorder, alt text, variant-specific image assignment,
+duplicate detection, resolution and aspect-ratio checks, 1600 × 1600 canvas
+normalization, and real background removal. Shopify CSV and Admin API exports
+preserve the complete gallery and variant mappings.
+
+Existing products receive their current primary image during migration. Re-run
+a saved source once to collect the full source gallery. The first background
+cleanup downloads its model into the persistent `rembg_models` volume; later
+runs reuse it.
 ## Security
 
 - Passwords and sessions are managed by Better Auth.

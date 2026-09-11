@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3:4b"
     scrappify_api_key: str | None = None
+    public_api_url: str = ""
     allowed_origins: CsvList = ["http://localhost:3000"]
     allowed_source_hosts: CsvList = [
         "beymen.com",

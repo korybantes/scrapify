@@ -40,6 +40,10 @@ def sync_product(product_id: UUID | str, workspace_id: UUID | str) -> dict:
         "barcode": "",
     }]
     option_name = str(source_variants[0].get("option_name") or "Title")
+    gallery = list(product.get("images") or [])
+    if not gallery and product.get("image_url"):
+        gallery = [{"url": product["image_url"], "alt": export_title, "variant_ids": []}]
+    files = [{"originalSource": image.get("url"), "alt": image.get("alt") or export_title} for image in gallery if image.get("url")]
     variants = []
     for source_variant in source_variants:
         variant = {
@@ -53,6 +57,10 @@ def sync_product(product_id: UUID | str, workspace_id: UUID | str) -> dict:
                 "tracked": True,
             },
         }
+        variant_key = str(source_variant.get("source_variant_id") or source_variant.get("option_value") or "")
+        variant_image = next((image for image in gallery if variant_key in (image.get("variant_ids") or [])), None)
+        if variant_image:
+            variant["file"] = {"originalSource": variant_image["url"], "alt": variant_image.get("alt") or export_title}
         if source_variant.get("barcode"):
             variant["barcode"] = str(source_variant["barcode"])
         if product["compare_at_price"] and product["compare_at_price"] > (product["sale_price"] or 0):
@@ -74,6 +82,7 @@ def sync_product(product_id: UUID | str, workspace_id: UUID | str) -> dict:
                 "values": [{"name": str(item.get("option_value") or "Default Title")} for item in source_variants],
             }],
             "variants": variants,
+            "files": files,
         },
     }
     url = (

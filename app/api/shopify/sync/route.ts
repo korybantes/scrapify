@@ -1,4 +1,5 @@
 import { db, jsonError } from "@/app/lib/server-db";
+import { productImages } from "@/app/lib/product-images";
 import { exportProductTitle } from "@/app/lib/product-title";
 import { decryptSecret } from "@/app/lib/secrets";
 import { requireWorkspace } from "@/app/lib/workspace";
@@ -122,6 +123,8 @@ export async function POST(request: Request) {
           barcode: "", inventory_qty: Number(product.inventory_qty || 0),
         }];
         const optionName = String(sourceVariants[0].option_name || "Title");
+        const gallery = productImages(product as Record<string, unknown>);
+        const shopifyFiles = gallery.map((image) => ({ originalSource: image.url, alt: image.alt || exportTitle }));
         const price = adjustedPrice(product.sale_price, config);
         const compareAtPrice = Number(config.compareAtPercent || 0) > 0
           ? Number((price * (1 + Number(config.compareAtPercent) / 100)).toFixed(2))
@@ -133,6 +136,9 @@ export async function POST(request: Request) {
             inventoryItem: { sku: String(sourceVariant.sku || product.id), tracked: true },
             inventoryPolicy: config.inventoryPolicy === "continue" ? "CONTINUE" : "DENY",
           };
+          const variantKey = String(sourceVariant.source_variant_id || sourceVariant.option_value || "");
+          const variantImage = gallery.find((image) => image.variant_ids?.includes(variantKey));
+          if (variantImage) variant.file = { originalSource: variantImage.url, alt: variantImage.alt || exportTitle };
           if (sourceVariant.barcode) variant.barcode = String(sourceVariant.barcode);
           if (locationId) variant.inventoryQuantities = [{
             locationId, name: "available", quantity: Number(sourceVariant.inventory_qty || 0),
@@ -173,7 +179,7 @@ export async function POST(request: Request) {
             })),
           }],
           variants,
-          files: product.image_url ? [{ originalSource: product.image_url, alt: exportTitle }] : [],
+          files: shopifyFiles,
         };
         if (categoryUid) productInput.category = `gid://shopify/TaxonomyCategory/${categoryUid}`;
         if (collectionIds.length) productInput.collections = collectionIds;

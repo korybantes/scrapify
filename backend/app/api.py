@@ -5,14 +5,16 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .db import close_pool, connection, migrate, open_pool
 from .groq_service import enrich_many, suggest_category, translate_many
+from .image_service import MEDIA_ROOT, process_product_image
 from .product_titles import export_product_title
-from .schemas import CategorySuggestionRequest, IdList, JobCreate, ProductPatch, SourceAdapterTest, TranslationRequest
+from .schemas import CategorySuggestionRequest, IdList, JobCreate, ProductImageAction, ProductPatch, SourceAdapterTest, TranslationRequest
 from .security import require_api_key
 from .shopify_service import sync_product
 from .scraper import test_source_adapter
@@ -36,6 +38,9 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-Scrappify-Key", "X-Workspace-ID"],
 )
 
+
+MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
 
 def workspace_header(
     workspace_id: UUID = Header(alias="X-Workspace-ID"),
@@ -175,6 +180,20 @@ def cancel_job(job_id: UUID, workspace_id: UUID = Depends(workspace_header)):
     return job
 
 
+@app.post("/v1/products/{product_id}/images/process", dependencies=[Depends(require_api_key)])
+def process_image(
+    product_id: UUID,
+    payload: ProductImageAction,
+    request: Request,
+    workspace_id: UUID = Depends(workspace_header),
+):
+    try:
+        return process_product_image(
+            product_id, workspace_id, payload.image_id, payload.action, str(request.base_url)
+        )
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 @app.get("/v1/products", dependencies=[Depends(require_api_key)])
 def list_products(
     query: str = "",
@@ -289,7 +308,7 @@ def export_shopify_csv(
         "Tags", "Published", "Option1 Name", "Option1 Value", "Variant SKU",
         "Variant Barcode", "Variant Price", "Variant Compare At Price", "Variant Inventory Qty",
         "Variant Inventory Policy", "Variant Fulfillment Service",
-        "Variant Requires Shipping", "Variant Taxable", "Image Src",
+        "Variant Requires Shipping", "Variant Taxable", "Variant Image", "Image Src",
         "Image Position", "Image Alt Text", "Status",
     ]
     output = io.StringIO()
@@ -305,6 +324,9 @@ def export_shopify_csv(
             "barcode": "",
             "inventory_qty": product["inventory_qty"],
         }]
+        gallery = list(product.get("images") or [])
+        if not gallery and product.get("image_url"):
+            gallery = [{"url": product["image_url"], "alt": export_title, "position": 1, "variant_ids": []}]
         for index, variant in enumerate(source_variants):
             writer.writerow({
                 "Handle": handle,
@@ -326,10 +348,18 @@ def export_shopify_csv(
                 "Variant Fulfillment Service": "manual",
                 "Variant Requires Shipping": "TRUE",
                 "Variant Taxable": "TRUE",
-                "Image Src": product["image_url"] if index == 0 else "",
-                "Image Position": "1" if index == 0 else "",
-                "Image Alt Text": export_title if index == 0 else "",
+                "Variant Image": next((image.get("url") for image in gallery if str(variant.get("source_variant_id") or variant.get("option_value") or "") in (image.get("variant_ids") or [])), ""),
+                "Image Src": gallery[index].get("url", "") if index < len(gallery) else "",
+                "Image Position": str(index + 1) if index < len(gallery) else "",
+                "Image Alt Text": gallery[index].get("alt") or export_title if index < len(gallery) else "",
                 "Status": "active" if product["published"] else "draft",
+            })
+        for image in gallery[len(source_variants):]:
+            writer.writerow({
+                "Handle": handle,
+                "Image Src": image.get("url", ""),
+                "Image Position": image.get("position", ""),
+                "Image Alt Text": image.get("alt") or export_title,
             })
     return Response(
         content="\ufeff" + output.getvalue(),

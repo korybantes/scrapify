@@ -1,4 +1,5 @@
 import { db, jsonError } from "@/app/lib/server-db";
+import { productImages } from "@/app/lib/product-images";
 import { exportProductTitle } from "@/app/lib/product-title";
 import { requireWorkspace } from "@/app/lib/workspace";
 
@@ -7,7 +8,7 @@ const columns = [
   "Tags", "Published", "Option1 Name", "Option1 Value", "Variant SKU",
   "Variant Barcode", "Variant Price", "Variant Compare At Price", "Variant Inventory Qty",
   "Variant Inventory Policy", "Variant Fulfillment Service",
-  "Variant Requires Shipping", "Variant Taxable", "Image Src",
+  "Variant Requires Shipping", "Variant Taxable", "Variant Image", "Image Src",
   "Image Position", "Image Alt Text", "SEO Title", "SEO Description",
   "Google Shopping / Google Product Category", "Google Shopping / Gender",
   "Google Shopping / Age Group", "Google Shopping / Condition", "Google Shopping / MPN",
@@ -137,6 +138,7 @@ export async function GET(request: Request) {
         option_name: "Title", option_value: "Default Title", sku: String(product.id),
         barcode: "", inventory_qty: Number(product.inventory_qty || 0),
       }];
+      const gallery = productImages(product as Record<string, unknown>);
       const tags = Array.from(new Set([
         ...(Array.isArray(product.tags) ? product.tags : []),
         ...(Array.isArray(config.tags) ? config.tags : []),
@@ -147,32 +149,47 @@ export async function GET(request: Request) {
         : Number(product.compare_at_price || 0) || "";
       const seoDescription = plainText(product.body_html).slice(0, 320);
       const googleLabels = Array.isArray(config.google?.labels) ? config.google!.labels!.slice(0, 5) : [];
+      const handle = slugify(exportTitle);
 
-      return variants.map((variant: Record<string, unknown>, index: number) => [
-        slugify(exportTitle), exportTitle, product.body_html, product.vendor,
-        config.categoryId || product.category,
-        config.productType || product.category,
-        config.collections?.[0] || "",
-        tags.join(","),
-        (config.status || (product.published ? "active" : "draft")) === "active" ? "TRUE" : "FALSE",
-        String(variant.option_name || "Title"), String(variant.option_value || "Default Title"),
-        String(variant.sku || product.id), String(variant.barcode || ""),
-        price, configuredCompareAt, Number(variant.inventory_qty || 0),
-        config.inventoryPolicy || "deny", "manual", "TRUE", "TRUE",
-        index === 0 ? product.image_url : "", index === 0 ? "1" : "",
-        index === 0 ? exportTitle : "", index === 0 ? exportTitle.slice(0, 70) : "",
-        index === 0 ? seoDescription : "",
-        config.google?.category || "", config.google?.gender || "",
-        config.google?.ageGroup || "", config.google?.condition || "new",
-        config.google?.mpn === "sku" ? String(variant.sku || product.id) : config.google?.mpn || "",
-        ...Array.from({ length: 5 }, (_, labelIndex) => googleLabels[labelIndex] || ""),
-        config.attributes?.color || "", config.attributes?.material || "",
-        config.attributes?.sizeSystem || "", config.attributes?.scentFamily || "",
-        config.attributes?.volume || "",
-        config.status || (product.published ? "active" : "draft"),
-      ].map(escapeCsv).join(","));
+      const variantRows = variants.map((variant: Record<string, unknown>, index: number) => {
+        const image = gallery[index];
+        const variantKey = String(variant.source_variant_id || variant.option_value || "");
+        const variantImage = gallery.find((item) => item.variant_ids?.includes(variantKey));
+        return [
+          handle, exportTitle, product.body_html, product.vendor,
+          config.categoryId || product.category,
+          config.productType || product.category,
+          config.collections?.[0] || "",
+          tags.join(","),
+          (config.status || (product.published ? "active" : "draft")) === "active" ? "TRUE" : "FALSE",
+          String(variant.option_name || "Title"), String(variant.option_value || "Default Title"),
+          String(variant.sku || product.id), String(variant.barcode || ""),
+          price, configuredCompareAt, Number(variant.inventory_qty || 0),
+          config.inventoryPolicy || "deny", "manual", "TRUE", "TRUE",
+          variantImage?.url || "",
+          image?.url || "", image ? String(index + 1) : "", image ? (image.alt || exportTitle) : "",
+          index === 0 ? exportTitle.slice(0, 70) : "", index === 0 ? seoDescription : "",
+          config.google?.category || "", config.google?.gender || "",
+          config.google?.ageGroup || "", config.google?.condition || "new",
+          config.google?.mpn === "sku" ? String(variant.sku || product.id) : config.google?.mpn || "",
+          ...Array.from({ length: 5 }, (_, labelIndex) => googleLabels[labelIndex] || ""),
+          config.attributes?.color || "", config.attributes?.material || "",
+          config.attributes?.sizeSystem || "", config.attributes?.scentFamily || "",
+          config.attributes?.volume || "",
+          config.status || (product.published ? "active" : "draft"),
+        ].map(escapeCsv).join(",");
+      });
+
+      const extraImageRows = gallery.slice(variants.length).map((image) => {
+        const cells = Array(columns.length).fill("");
+        cells[0] = handle;
+        cells[21] = image.url;
+        cells[22] = String(image.position);
+        cells[23] = image.alt || exportTitle;
+        return cells.map(escapeCsv).join(",");
+      });
+      return [...variantRows, ...extraImageRows];
     });
-
     if (!historyId && url.searchParams.get("record") !== "false" && products.length) {
       const warningCount = products.filter((product) =>
         !product.image_url || !product.body_html || !product.sale_price || product.ai_status !== "enriched"

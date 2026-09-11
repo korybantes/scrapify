@@ -5,6 +5,8 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { authClient } from "@/app/lib/auth-client";
 import { ExportWorkspace, type ExportConfig } from "@/app/app/ExportWorkspace";
 import { OperationsHub } from "@/app/app/OperationsHub";
+import { ProductImageManager } from "@/app/app/ProductImageManager";
+import type { ProductImage } from "@/app/lib/product-images";
 import {
   Activity,
   Bell,
@@ -51,6 +53,7 @@ type Product = {
   sale_price: string | null;
   compare_at_price: string | null;
   image_url: string;
+  images: ProductImage[];
   body_html: string;
   tags: string[];
   published: boolean;
@@ -738,6 +741,7 @@ export default function Home() {
         compare_at_price: form.get("compare_at_price") || null,
         inventory_qty: Number(form.get("inventory_qty")),
         body_html: form.get("body_html"),
+        images: drawer.images,
         published: form.get("published") === "on",
       }),
     });
@@ -1509,8 +1513,8 @@ export default function Home() {
         <div className="drawer-backdrop" onClick={() => setDrawer(null)}>
           <form className="product-drawer" onSubmit={saveProduct} onClick={(event) => event.stopPropagation()}>
             <button type="button" className="drawer-close" aria-label="Close product editor" onClick={() => setDrawer(null)}><X size={18} /></button>
-            <div className="drawer-product-art"><SafeProductImage src={drawer.image_url} alt={drawer.title} fallback={drawer.vendor.slice(0, 1) || "P"} /></div>
             <span className="kicker">WORKSPACE PRODUCT</span><h2>{drawer.title}</h2><p>{drawer.source} · Updated {formatDate(drawer.updated_at)}</p>
+            <ProductImageManager product={drawer} notify={notify} onChange={(images) => setDrawer((current) => current ? { ...current, images, image_url: images[0]?.url || "" } : current)} />
             {Array.isArray(drawer.variants) && drawer.variants.length > 0 && (
               <section className="product-variants-card">
                 <div><span><Boxes size={15} /><strong>{drawer.variants.length} source variants</strong></span><small>{drawer.inventory_qty} total units - refreshed from Beymen</small></div>
